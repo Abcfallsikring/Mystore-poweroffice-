@@ -171,18 +171,13 @@ def po_headers() -> dict:
 # ─── PowerOffice: hent produkter ────────────────────────────────────────────
 
 def po_get_all_products() -> dict:
-    """Returnerer dict: { articleNumber -> produkt fra PowerOffice }"""
+    """Returnerer dict: { articleNumber -> produkt fra PowerOffice }.
+    Standard sidestørrelse er 5000; paginering via x-pagination-header."""
     products = {}
-    skip = 0
-    size = 100
+    url = f"{PO_BASE_URL}/products"
 
-    while True:
-        resp = requests.get(
-            f"{PO_BASE_URL}/products",
-            headers=po_headers(),
-            params={"$top": size, "$skip": skip},
-            timeout=30,
-        )
+    while url:
+        resp = requests.get(url, headers=po_headers(), timeout=60)
 
         if resp.status_code != 200:
             log.error("PowerOffice GET products feil %s: %s", resp.status_code, resp.text[:300])
@@ -192,19 +187,21 @@ def po_get_all_products() -> dict:
         if isinstance(data, list):
             batch = data
         else:
-            batch = data.get("data") or []
-
-        if not batch:
-            break
+            batch = data.get("data") or data.get("value") or []
 
         for p in batch:
             code = p.get("code") or p.get("articleNumber") or p.get("productCode")
             if code:
                 products[str(code).strip()] = p
 
-        if len(batch) < size:
-            break
-        skip += size
+        # Neste side fra x-pagination-header (om datasettet er større enn sidestørrelsen)
+        url = None
+        pag = resp.headers.get("x-pagination")
+        if pag:
+            try:
+                url = json.loads(pag).get("nextPageLink") or json.loads(pag).get("NextPageLink")
+            except (ValueError, AttributeError):
+                pass
 
     log.info("PowerOffice: hentet %d produkter", len(products))
     return products
@@ -293,27 +290,26 @@ def run_sync():
 
 def test_mode():
     """Viser rådata fra begge API-er slik at feltnavn kan verifiseres."""
-    log.info("--- TEST: Henter produkter fra MyStore (rådata) ---")
-    raw = mystore_get_all_products(raw_mode=True)
-    for p in raw[:2]:
-        print(json.dumps(p, indent=2, ensure_ascii=False))
-    log.info("MyStore totalt: %d produkter", len(raw))
+    log.info("--- TEST: MyStore product-variants (her ligger trolig lager/innpris) ---")
+    r = requests.get(
+        f"{MYSTORE_BASE}/product-variants",
+        headers=mystore_headers(),
+        params={"page[size]": 3},
+        timeout=30,
+    )
+    print(f"GET /product-variants -> {r.status_code}")
+    if r.status_code == 200:
+        print(json.dumps(r.json(), indent=2, ensure_ascii=False)[:4000])
 
-    # Prøv å hente ett enkeltprodukt med alle relasjoner
-    if raw:
-        pid = raw[1].get("id") if len(raw) > 1 else raw[0].get("id")
-        log.info("--- TEST: Henter enkeltprodukt %s med include ---", pid)
-        for inc in ("stock", "prices", "product-stock", "variants"):
-            r = requests.get(
-                f"{MYSTORE_BASE}/products/{pid}",
-                headers=mystore_headers(),
-                params={"include": inc},
-                timeout=30,
-            )
-            print(f"include={inc} -> {r.status_code}")
-            if r.status_code == 200:
-                print(json.dumps(r.json(), indent=2, ensure_ascii=False)[:3000])
-                break
+    log.info("--- TEST: Varianter for enkeltprodukt 281 ---")
+    r = requests.get(
+        f"{MYSTORE_BASE}/products/281/product-variants",
+        headers=mystore_headers(),
+        timeout=30,
+    )
+    print(f"GET /products/281/product-variants -> {r.status_code}")
+    if r.status_code == 200:
+        print(json.dumps(r.json(), indent=2, ensure_ascii=False)[:4000])
 
     log.info("--- TEST: Henter produkter fra PowerOffice ---")
     po = po_get_all_products()
