@@ -1,9 +1,17 @@
 name: MyStore -> PowerOffice synk
 
 on:
+  # Kjoeres automatisk kl. 06:00 norsk tid (05:00 UTC) hver natt
   schedule:
     - cron: "0 5 * * *"
+
+  # Kan ogsaa trigges manuelt fra GitHub Actions-fanen
   workflow_dispatch:
+    inputs:
+      mode:
+        description: "Kjoeremodus: sync eller test"
+        required: false
+        default: "sync"
 
 jobs:
   sync:
@@ -24,9 +32,10 @@ jobs:
 
       - name: Kjor synk
         env:
-          MYSTORE_TOKEN:           ${{ secrets.MYSTORE_TOKEN }}
-          MYSTORE_SHOP:            ${{ secrets.MYSTORE_SHOP }}
-          PO_APP_KEY:              ${{ secrets.PO_APP_KEY }}
-          PO_CLIENT_KEY:           ${{ secrets.PO_CLIENT_KEY }}
-          PO_SUBSCRIPTION_KEY:     ${{ secrets.PO_SUBSCRIPTION_KEY }}
-        run: python sync.py
+          MYSTORE_TOKEN:         ${{ secrets.MYSTORE_TOKEN }}
+          MYSTORE_PRODUKT_TOKEN: ${{ secrets.MYSTORE_PRODUKT_TOKEN }}
+          MYSTORE_SHOP:          ${{ secrets.MYSTORE_SHOP }}
+          PO_APP_KEY:            ${{ secrets.PO_APP_KEY }}
+          PO_CLIENT_KEY:         ${{ secrets.PO_CLIENT_KEY }}
+          PO_SUBSCRIPTION_KEY:   ${{ secrets.PO_SUBSCRIPTION_KEY }}
+        run: python sync.py ${{ github.event.inputs.mode || 'sync' }}
