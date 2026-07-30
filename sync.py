@@ -218,13 +218,18 @@ def po_get_all_products() -> dict:
 # ─── PowerOffice: oppdater ──────────────────────────────────────────────────
 
 def po_update_product(po_product_id: str, product: dict, updates: dict) -> bool:
-    """Oppdaterer produkt med RFC 6902 JSON Patch (PascalCase paths)."""
+    """Oppdaterer produkt med RFC 6902 JSON Patch.
+
+    Feltnavn verifisert mot PowerOffice v2 (diag-kjoering 30.07.2026):
+      UnitPrice = utpris (salgspris)
+      UnitCost  = innpris (kostpris)
+    """
     patch_ops = []
     if "salesPrice" in updates:
-        patch_ops.append({"op": "replace", "path": "/SalesPrice",
+        patch_ops.append({"op": "replace", "path": "/UnitPrice",
                           "value": updates["salesPrice"]})
     if "costPrice" in updates:
-        patch_ops.append({"op": "replace", "path": "/CostPrice",
+        patch_ops.append({"op": "replace", "path": "/UnitCost",
                           "value": updates["costPrice"]})
 
     if not patch_ops:
@@ -379,54 +384,49 @@ def diag_mode():
     pid = str(prod.get("Id") or prod.get("id"))
 
     print("=" * 70)
-    print("DIAG 1: Fullt produktobjekt fra PowerOffice (eksakt feltnavn)")
-    print("=" * 70)
-    print(json.dumps(prod, indent=2, ensure_ascii=False))
-
-    print()
-    print("=" * 70)
-    print(f"DIAG 2: Tester oppdateringsformater mot produkt {key} (id={pid})")
+    print(f"DIAG: Bekrefter prisoppdatering mot produkt {key} (id={pid})")
     print("=" * 70)
 
-    ny_pris = 123.45
-
-    varianter = [
-        ("PATCH JSON-Patch PascalCase",
-         "patch", [{"op": "replace", "path": "/SalesPrice", "value": ny_pris}]),
-        ("PATCH JSON-Patch camelCase",
-         "patch", [{"op": "replace", "path": "/salesPrice", "value": ny_pris}]),
-        ("PATCH merge-patch PascalCase",
-         "patch", {"SalesPrice": ny_pris}),
-        ("PATCH merge-patch camelCase",
-         "patch", {"salesPrice": ny_pris}),
-        ("PUT hele objektet (PascalCase-felt)",
-         "put", {**prod, "SalesPrice": ny_pris}),
-    ]
-
-    for navn, metode, payload in varianter:
-        try:
-            fn = requests.patch if metode == "patch" else requests.put
-            r = fn(f"{PO_BASE_URL}/products/{pid}",
-                   headers=po_headers(), json=payload, timeout=15)
-            status = "OK" if r.status_code in (200, 204) else "FEIL"
-            print(f"\n[{status}] {navn} -> HTTP {r.status_code}")
-            print(f"      payload: {json.dumps(payload)[:200]}")
-            if r.text.strip():
-                print(f"      respons: {r.text[:400]}")
-        except Exception as e:
-            print(f"\n[EXC] {navn} -> {e}")
-
-    print()
-    print("=" * 70)
-    print("DIAG 3: Tester lager-endepunkt (stockEntries)")
-    print("=" * 70)
-    r = requests.post(f"{PO_BASE_URL}/products/{pid}/stockEntries",
-                      headers=po_headers(),
-                      json={"quantity": 5, "entryType": "ManualAdjustment"},
-                      timeout=15)
-    print(f"POST stockEntries -> HTTP {r.status_code}")
+    r = requests.patch(
+        f"{PO_BASE_URL}/products/{pid}",
+        headers=po_headers(),
+        json=[{"op": "replace", "path": "/UnitPrice", "value": 123.45},
+              {"op": "replace", "path": "/UnitCost", "value": 67.89}],
+        timeout=15,
+    )
+    print(f"PATCH /UnitPrice + /UnitCost -> HTTP {r.status_code}")
     if r.text.strip():
         print(f"respons: {r.text[:400]}")
+
+    print()
+    print("=" * 70)
+    print("DIAG: Leter etter riktig lager-endepunkt")
+    print("=" * 70)
+
+    # 1) Er lager et vanlig felt paa produktet?
+    for felt in ("/StockOnHand", "/StockAvailable", "/IsStockItem"):
+        verdi = True if felt == "/IsStockItem" else 7
+        r = requests.patch(f"{PO_BASE_URL}/products/{pid}",
+                           headers=po_headers(),
+                           json=[{"op": "replace", "path": felt, "value": verdi}],
+                           timeout=15)
+        merk = "OK" if r.status_code in (200, 204) else "FEIL"
+        print(f"[{merk}] PATCH {felt}={verdi} -> HTTP {r.status_code}")
+        if r.status_code not in (200, 204) and r.text.strip():
+            print(f"      {r.text[:250]}")
+
+    # 2) Finnes det egne lager-ressurser?
+    print()
+    for sti in ("warehouses", "stock", "stocks", "stockItems",
+                "inventory", "productStock", "stockAdjustments",
+                f"products/{pid}/stock", f"products/{pid}/stockEntries"):
+        try:
+            r = requests.get(f"{PO_BASE_URL}/{sti}", headers=po_headers(), timeout=15)
+            print(f"GET /{sti} -> HTTP {r.status_code}")
+            if r.status_code == 200 and r.text.strip():
+                print(f"      {r.text[:300]}")
+        except Exception as e:
+            print(f"GET /{sti} -> EXC {e}")
 
 
 if __name__ == "__main__":
