@@ -43,6 +43,11 @@ PO_SUBSCRIPTION_KEY = os.environ["PO_SUBSCRIPTION_KEY"]
 PO_BASE_URL  = os.environ.get("PO_BASE_URL", "https://goapi.poweroffice.net/demo/v2")
 PO_TOKEN_URL = os.environ.get("PO_TOKEN_URL", "https://goapi.poweroffice.net/Demo/OAuth/Token")
 
+# Synkroniser lagerantall. Krever at varen settes som lagervare (IsStockItem)
+# i PowerOffice - da blir lagerfeltene ogsaa synlige i GUI.
+# Sett SYNC_STOCK=false for aa synke kun priser.
+SYNC_STOCK = os.environ.get("SYNC_STOCK", "true").lower() != "false"
+
 # ─── MyStore (JSON:API, samme format som mystore-onix) ──────────────────────
 
 def mystore_headers() -> dict:
@@ -217,20 +222,31 @@ def po_get_all_products() -> dict:
 
 # ─── PowerOffice: oppdater ──────────────────────────────────────────────────
 
-def po_update_product(po_product_id: str, product: dict, updates: dict) -> bool:
-    """Oppdaterer produkt med RFC 6902 JSON Patch.
+def po_update_product(po_product_id: str, product: dict, ms: dict) -> bool:
+    """Oppdaterer pris OG lager i ett RFC 6902 JSON Patch-kall.
 
-    Feltnavn verifisert mot PowerOffice v2 (diag-kjoering 30.07.2026):
-      UnitPrice = utpris (salgspris)
-      UnitCost  = innpris (kostpris)
+    Feltnavn hentet fra ProductPatchDto i PowerOffice v2 OpenAPI-spec:
+      UnitPrice   = utpris (salgspris)
+      UnitCost    = innpris (kostpris)
+      StockOnHand = antall paa lager
+      IsStockItem = maa vaere true for at StockOnHand kan settes
     """
     patch_ops = []
-    if "salesPrice" in updates:
+
+    if ms["price"] > 0:
         patch_ops.append({"op": "replace", "path": "/UnitPrice",
-                          "value": updates["salesPrice"]})
-    if "costPrice" in updates:
+                          "value": ms["price"]})
+    if ms["purchasePrice"] > 0:
         patch_ops.append({"op": "replace", "path": "/UnitCost",
-                          "value": updates["costPrice"]})
+                          "value": ms["purchasePrice"]})
+
+    # Lager: PowerOffice krever IsStockItem=true foer StockOnHand kan settes.
+    if SYNC_STOCK:
+        if not product.get("IsStockItem"):
+            patch_ops.append({"op": "replace", "path": "/IsStockItem",
+                              "value": True})
+        patch_ops.append({"op": "replace", "path": "/StockOnHand",
+                          "value": ms["stockQuantity"]})
 
     if not patch_ops:
         return True
@@ -245,20 +261,6 @@ def po_update_product(po_product_id: str, product: dict, updates: dict) -> bool:
         return True
     log.warning("PowerOffice PATCH produkt %s feil %s: %s",
                 po_product_id, resp.status_code, resp.text)
-    return False
-
-
-def po_set_stock(po_product_id: str, quantity: int) -> bool:
-    resp = requests.post(
-        f"{PO_BASE_URL}/products/{po_product_id}/stockEntries",
-        headers=po_headers(),
-        json={"quantity": quantity, "entryType": "ManualAdjustment"},
-        timeout=15,
-    )
-    if resp.status_code in (200, 201, 204):
-        return True
-    log.warning("PowerOffice stock-oppdatering for %s feil %s: %s",
-                po_product_id, resp.status_code, resp.text[:200])
     return False
 
 
@@ -285,22 +287,7 @@ def run_sync():
 
         po_id = str(po.get("Id") or po.get("id"))
 
-        price_payload = {}
-        if ms["price"] > 0:
-            price_payload["salesPrice"] = ms["price"]
-        if ms["purchasePrice"] > 0:
-            price_payload["costPrice"] = ms["purchasePrice"]
-
-        price_ok = True
-        if price_payload:
-            price_ok = po_update_product(po_id, po, price_payload)
-
-        # Lager oppdateres bare for lagerførte varer i PowerOffice
-        stock_ok = True
-        if po.get("IsStockItem"):
-            stock_ok = po_set_stock(po_id, ms["stockQuantity"])
-
-        if price_ok and stock_ok:
+        if po_update_product(po_id, po, ms):
             log.info("OK  %s  |  antall=%d  innpris=%.2f  utpris=%.2f",
                      article_no, ms["stockQuantity"], ms["purchasePrice"], ms["price"])
             updated += 1
@@ -370,63 +357,24 @@ def seed_demo():
         print(resp.text[:400])
 
 
-# ─── DIAG-modus (finn riktig oppdateringsformat for PowerOffice) ────────────
+# ─── DIAG-modus (verifiser resultat i PowerOffice) ──────────────────────────
 
 def diag_mode():
-    """Viser eksakte feltnavn i PowerOffice-produkt og tester ulike
-    oppdateringsformater mot ETT produkt. Logger full respons for hver."""
+    """Viser hva som faktisk staar lagret i PowerOffice etter en synk."""
     po = po_get_all_products()
     if not po:
-        log.error("DIAG: ingen produkter i PowerOffice - kan ikke teste")
+        log.error("DIAG: ingen produkter i PowerOffice")
         return
 
-    key, prod = next(iter(po.items()))
-    pid = str(prod.get("Id") or prod.get("id"))
-
-    print("=" * 70)
-    print(f"DIAG: Bekrefter prisoppdatering mot produkt {key} (id={pid})")
-    print("=" * 70)
-
-    r = requests.patch(
-        f"{PO_BASE_URL}/products/{pid}",
-        headers=po_headers(),
-        json=[{"op": "replace", "path": "/UnitPrice", "value": 123.45},
-              {"op": "replace", "path": "/UnitCost", "value": 67.89}],
-        timeout=15,
-    )
-    print(f"PATCH /UnitPrice + /UnitCost -> HTTP {r.status_code}")
-    if r.text.strip():
-        print(f"respons: {r.text[:400]}")
-
-    print()
-    print("=" * 70)
-    print("DIAG: Leter etter riktig lager-endepunkt")
-    print("=" * 70)
-
-    # 1) Er lager et vanlig felt paa produktet?
-    for felt in ("/StockOnHand", "/StockAvailable", "/IsStockItem"):
-        verdi = True if felt == "/IsStockItem" else 7
-        r = requests.patch(f"{PO_BASE_URL}/products/{pid}",
-                           headers=po_headers(),
-                           json=[{"op": "replace", "path": felt, "value": verdi}],
-                           timeout=15)
-        merk = "OK" if r.status_code in (200, 204) else "FEIL"
-        print(f"[{merk}] PATCH {felt}={verdi} -> HTTP {r.status_code}")
-        if r.status_code not in (200, 204) and r.text.strip():
-            print(f"      {r.text[:250]}")
-
-    # 2) Finnes det egne lager-ressurser?
-    print()
-    for sti in ("warehouses", "stock", "stocks", "stockItems",
-                "inventory", "productStock", "stockAdjustments",
-                f"products/{pid}/stock", f"products/{pid}/stockEntries"):
-        try:
-            r = requests.get(f"{PO_BASE_URL}/{sti}", headers=po_headers(), timeout=15)
-            print(f"GET /{sti} -> HTTP {r.status_code}")
-            if r.status_code == 200 and r.text.strip():
-                print(f"      {r.text[:300]}")
-        except Exception as e:
-            print(f"GET /{sti} -> EXC {e}")
+    print(f"{'Varenr':<14} {'Utpris':>10} {'Innpris':>10} {'Lager':>8}  Lagervare")
+    print("-" * 60)
+    for kode, p in po.items():
+        print(f"{kode:<14} "
+              f"{str(p.get('UnitPrice')):>10} "
+              f"{str(p.get('UnitCost')):>10} "
+              f"{str(p.get('StockOnHand')):>8}  "
+              f"{p.get('IsStockItem')}")
+    print(f"\nTotalt {len(po)} produkter i PowerOffice.")
 
 
 if __name__ == "__main__":
