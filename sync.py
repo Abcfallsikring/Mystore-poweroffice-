@@ -337,7 +337,7 @@ def seed_demo():
             "name": ms["name"][:100],
             "salesPrice": ms["price"],
             "costPrice": ms["purchasePrice"],
-            "salesAccount": 3000,  # standard salgskonto (avgiftspliktig)
+            "standardSalesAccount": 3000,  # standard salgskonto (avgiftspliktig)
         }
         resp = requests.post(
             f"{PO_BASE_URL}/products",
