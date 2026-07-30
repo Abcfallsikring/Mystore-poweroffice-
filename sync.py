@@ -199,7 +199,7 @@ def po_get_all_products() -> dict:
             batch = data.get("data") or data.get("value") or []
 
         for p in batch:
-            code = p.get("code") or p.get("articleNumber") or p.get("productCode")
+            code = p.get("Code") or p.get("code") or p.get("articleNumber")
             if code:
                 products[str(code).strip()] = p
 
@@ -271,19 +271,22 @@ def run_sync():
             not_found += 1
             continue
 
-        po_id = str(po.get("id") or po.get("productId"))
+        po_id = str(po.get("Id") or po.get("id"))
 
         price_payload = {}
         if ms["price"] > 0:
             price_payload["salesPrice"] = ms["price"]
         if ms["purchasePrice"] > 0:
-            price_payload["purchasePrice"] = ms["purchasePrice"]
+            price_payload["costPrice"] = ms["purchasePrice"]
 
         price_ok = True
         if price_payload:
             price_ok = po_update_product(po_id, price_payload)
 
-        stock_ok = po_set_stock(po_id, ms["stockQuantity"])
+        # Lager oppdateres bare for lagerførte varer i PowerOffice
+        stock_ok = True
+        if po.get("IsStockItem"):
+            stock_ok = po_set_stock(po_id, ms["stockQuantity"])
 
         if price_ok and stock_ok:
             log.info("OK  %s  |  antall=%d  innpris=%.2f  utpris=%.2f",
