@@ -226,12 +226,19 @@ def po_update_product(po_product_id: str, product: dict, ms: dict) -> bool:
     """Oppdaterer pris OG lager i ett RFC 6902 JSON Patch-kall.
 
     Feltnavn hentet fra ProductPatchDto i PowerOffice v2 OpenAPI-spec:
+      Name        = produktnavn (maks 400 tegn)
       UnitPrice   = utpris (salgspris)
       UnitCost    = innpris (kostpris)
       StockOnHand = antall paa lager
       IsStockItem = maa vaere true for at StockOnHand kan settes
     """
     patch_ops = []
+
+    # Navn: MyStore er fasit. Oppdaterer kun naar navnet faktisk avviker,
+    # slik at vi slipper unoedvendige skrivinger.
+    navn = ms["name"].strip()[:400]
+    if navn and navn != (product.get("Name") or ""):
+        patch_ops.append({"op": "replace", "path": "/Name", "value": navn})
 
     if ms["price"] > 0:
         patch_ops.append({"op": "replace", "path": "/UnitPrice",
@@ -342,7 +349,7 @@ def seed_demo():
     for ms in kandidater:
         payload = {
             "code": ms["articleNumber"],
-            "name": ms["name"][:100],
+            "name": ms["name"][:400],
             "salesPrice": ms["price"],
             "costPrice": ms["purchasePrice"],
             "standardSalesAccount": 3000,  # standard salgskonto (avgiftspliktig)
@@ -366,14 +373,14 @@ def diag_mode():
         log.error("DIAG: ingen produkter i PowerOffice")
         return
 
-    print(f"{'Varenr':<14} {'Utpris':>10} {'Innpris':>10} {'Lager':>8}  Lagervare")
-    print("-" * 60)
+    print(f"{'Varenr':<14} {'Utpris':>9} {'Innpris':>9} {'Lager':>7}  Navn")
+    print("-" * 100)
     for kode, p in po.items():
         print(f"{kode:<14} "
-              f"{str(p.get('UnitPrice')):>10} "
-              f"{str(p.get('UnitCost')):>10} "
-              f"{str(p.get('StockOnHand')):>8}  "
-              f"{p.get('IsStockItem')}")
+              f"{str(p.get('UnitPrice')):>9} "
+              f"{str(p.get('UnitCost')):>9} "
+              f"{str(p.get('StockOnHand')):>7}  "
+              f"{p.get('Name')}")
     print(f"\nTotalt {len(po)} produkter i PowerOffice.")
 
 
