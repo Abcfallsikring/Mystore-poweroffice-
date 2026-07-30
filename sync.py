@@ -179,6 +179,10 @@ def po_get_all_products() -> dict:
     while url:
         resp = requests.get(url, headers=po_headers(), timeout=60)
 
+        if resp.status_code == 204 or not resp.text.strip():
+            # Ingen produkter (tomt miljø)
+            break
+
         if resp.status_code != 200:
             log.error("PowerOffice GET products feil %s: %s", resp.status_code, resp.text[:300])
             resp.raise_for_status()
@@ -290,26 +294,23 @@ def run_sync():
 
 def test_mode():
     """Viser rådata fra begge API-er slik at feltnavn kan verifiseres."""
-    log.info("--- TEST: MyStore product-variants (her ligger trolig lager/innpris) ---")
-    r = requests.get(
-        f"{MYSTORE_BASE}/product-variants",
-        headers=mystore_headers(),
-        params={"page[size]": 3},
-        timeout=30,
-    )
-    print(f"GET /product-variants -> {r.status_code}")
+    log.info("--- TEST: Token i bruk: %s ---",
+             "MYSTORE_PRODUKT_TOKEN" if os.environ.get("MYSTORE_PRODUKT_TOKEN") else "MYSTORE_TOKEN")
+
+    log.info("--- TEST: Enkeltprodukt 281 (alle felter) ---")
+    r = requests.get(f"{MYSTORE_BASE}/products/281", headers=mystore_headers(), timeout=30)
+    print(f"GET /products/281 -> {r.status_code}")
     if r.status_code == 200:
         print(json.dumps(r.json(), indent=2, ensure_ascii=False)[:4000])
 
-    log.info("--- TEST: Varianter for enkeltprodukt 281 ---")
-    r = requests.get(
-        f"{MYSTORE_BASE}/products/281/product-variants",
-        headers=mystore_headers(),
-        timeout=30,
-    )
-    print(f"GET /products/281/product-variants -> {r.status_code}")
-    if r.status_code == 200:
-        print(json.dumps(r.json(), indent=2, ensure_ascii=False)[:4000])
+    log.info("--- TEST: Sonderer mulige lager-endepunkter ---")
+    for path in ("products/281/stock", "stocks", "product-stocks",
+                 "stock-groups", "stock-groups/1", "warehouses"):
+        r = requests.get(f"{MYSTORE_BASE}/{path}", headers=mystore_headers(),
+                         params={"page[size]": 2}, timeout=30)
+        print(f"GET /{path} -> {r.status_code}")
+        if r.status_code == 200:
+            print(json.dumps(r.json(), indent=2, ensure_ascii=False)[:2500])
 
     log.info("--- TEST: Henter produkter fra PowerOffice ---")
     po = po_get_all_products()
