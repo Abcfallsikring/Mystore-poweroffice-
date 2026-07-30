@@ -1,0 +1,32 @@
+name: MyStore -> PowerOffice synk
+
+on:
+  schedule:
+    - cron: "0 5 * * *"
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Sjekk ut kode
+        uses: actions/checkout@v4
+
+      - name: Sett opp Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Installer avhengigheter
+        run: pip install -r requirements.txt
+
+      - name: Kjor synk
+        env:
+          MYSTORE_TOKEN:           ${{ secrets.MYSTORE_TOKEN }}
+          MYSTORE_SHOP:            ${{ secrets.MYSTORE_SHOP }}
+          PO_APP_KEY:              ${{ secrets.PO_APP_KEY }}
+          PO_CLIENT_KEY:           ${{ secrets.PO_CLIENT_KEY }}
+          PO_SUBSCRIPTION_KEY:     ${{ secrets.PO_SUBSCRIPTION_KEY }}
+        run: python sync.py
