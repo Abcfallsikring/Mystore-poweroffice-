@@ -221,9 +221,9 @@ def po_update_product(po_product_id: str, product: dict, updates: dict) -> bool:
     """Oppdaterer produkt ved å bruke RFC 6902 JSON Patch format."""
     # RFC 6902 JSON Patch: array av operasjoner
     patch_ops = [
-        {"op": "replace", "path": "/salesPrice", "value": updates.get("salesPrice")}
+        {"op": "replace", "path": "/salesPrice", "value": updates.SalesPrice("salesPrice")}
         if "salesPrice" in updates else None,
-        {"op": "replace", "path": "/costPrice", "value": updates.get("costPrice")}
+        {"op": "replace", "path": "/costPrice", "value": updates.get("CostPrice")}
         if "costPrice" in updates else None,
     ]
     patch_ops = [op for op in patch_ops if op is not None]
