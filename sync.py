@@ -4,12 +4,11 @@ Synkroniserer antall (lager), innpris og utpris for alle produkter.
 
 Kjøres automatisk via GitHub Actions (se .github/workflows/sync.yml).
 Test:  python sync.py test   (viser rådata fra begge API-er)
-Seed:  python sync.py seed   (oppretter testvarer i PowerOffice demo)
 Synk:  python sync.py
 
 Nødvendige GitHub Secrets:
   MYSTORE_TOKEN           – API-token fra MyStore (samme som mystore-onix)
-  MYSTORE_PRODUKT_TOKEN   – egen token for produkt-API uten hide-scopes (viser cost/quantity)
+  MYSTORE_PRODUKT_TOKEN   – (valgfri) egen token for produkt-API, som i mystore-onix
   MYSTORE_SHOP            – Butikknavn, f.eks. abcfallsikr202
   PO_APP_KEY              – Application Key fra PowerOffice developer-portal
   PO_CLIENT_KEY           – Client Key fra PowerOffice (API-onboarding)
@@ -74,7 +73,7 @@ def _tall(attrs: dict, *keys) -> float:
 def mystore_get_all_products(raw_mode: bool = False) -> list[dict]:
     """
     Henter alle produkter fra MyStore (JSON:API med paginering).
-    raw_mode=True returnerer hele objektene (for test).
+    raw_mode=True returnerer uflatede attributter (for test).
     """
     products = []
     page = 1
@@ -218,16 +217,20 @@ def po_get_all_products() -> dict:
 
 # ─── PowerOffice: oppdater ──────────────────────────────────────────────────
 
-def po_update_product(po_product_id: str, payload: dict) -> bool:
-    resp = requests.patch(
+def po_update_product(po_product_id: str, product: dict, updates: dict) -> bool:
+    """Oppdaterer produkt ved å merge updates inn i eksisterende produkt og PUT."""
+    merged = {**product}
+    merged.update(updates)
+
+    resp = requests.put(
         f"{PO_BASE_URL}/products/{po_product_id}",
         headers=po_headers(),
-        json=payload,
+        json=merged,
         timeout=15,
     )
     if resp.status_code in (200, 204):
         return True
-    log.warning("PowerOffice PATCH produkt %s feil %s: %s",
+    log.warning("PowerOffice PUT produkt %s feil %s: %s",
                 po_product_id, resp.status_code, resp.text[:200])
     return False
 
@@ -254,10 +257,6 @@ def run_sync():
     mystore_products = mystore_get_all_products()
     po_products = po_get_all_products()
 
-    if not po_products:
-        log.warning("PowerOffice har ingen produkter - ingenting aa oppdatere.")
-        return
-
     updated = 0
     not_found = 0
     errors = 0
@@ -281,7 +280,7 @@ def run_sync():
 
         price_ok = True
         if price_payload:
-            price_ok = po_update_product(po_id, price_payload)
+            price_ok = po_update_product(po_id, po, price_payload)
 
         # Lager oppdateres bare for lagerførte varer i PowerOffice
         stock_ok = True
@@ -309,14 +308,20 @@ def test_mode():
     log.info("--- TEST: Token i bruk: %s ---",
              "MYSTORE_PRODUKT_TOKEN" if os.environ.get("MYSTORE_PRODUKT_TOKEN") else "MYSTORE_TOKEN")
 
-    log.info("--- TEST: Henter alle MyStore-produkter (ferdig mappet) ---")
-    products = mystore_get_all_products()
-    med_lager = [p for p in products if p["stockQuantity"] > 0]
-    med_innpris = [p for p in products if p["purchasePrice"] > 0]
-    log.info("Totalt: %d | med lager > 0: %d | med innpris > 0: %d",
-             len(products), len(med_lager), len(med_innpris))
-    for p in (med_lager[:3] or products[:3]):
-        print(json.dumps(p, indent=2, ensure_ascii=False))
+    log.info("--- TEST: Enkeltprodukt 281 (alle felter) ---")
+    r = requests.get(f"{MYSTORE_BASE}/products/281", headers=mystore_headers(), timeout=30)
+    print(f"GET /products/281 -> {r.status_code}")
+    if r.status_code == 200:
+        print(json.dumps(r.json(), indent=2, ensure_ascii=False)[:4000])
+
+    log.info("--- TEST: Sonderer mulige lager-endepunkter ---")
+    for path in ("products/281/stock", "stocks", "product-stocks",
+                 "stock-groups", "stock-groups/1", "warehouses"):
+        r = requests.get(f"{MYSTORE_BASE}/{path}", headers=mystore_headers(),
+                         params={"page[size]": 2}, timeout=30)
+        print(f"GET /{path} -> {r.status_code}")
+        if r.status_code == 200:
+            print(json.dumps(r.json(), indent=2, ensure_ascii=False)[:2500])
 
     log.info("--- TEST: Henter produkter fra PowerOffice ---")
     po = po_get_all_products()
