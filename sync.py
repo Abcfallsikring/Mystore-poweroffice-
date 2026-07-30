@@ -367,21 +367,77 @@ def seed_demo():
 # ─── DIAG-modus (verifiser resultat i PowerOffice) ──────────────────────────
 
 def diag_mode():
-    """Viser hva som faktisk staar lagret i PowerOffice etter en synk."""
+    """Viser status i PowerOffice + undersoeker enhet-felt og nullsaldo."""
     po = po_get_all_products()
     if not po:
         log.error("DIAG: ingen produkter i PowerOffice")
         return
 
-    print(f"{'Varenr':<14} {'Utpris':>9} {'Innpris':>9} {'Lager':>7}  Navn")
-    print("-" * 100)
+    print(f"{'Varenr':<14} {'Utpris':>9} {'Innpris':>9} {'Lager':>7} {'Enhet':>6}  Navn")
+    print("-" * 110)
     for kode, p in po.items():
         print(f"{kode:<14} "
               f"{str(p.get('UnitPrice')):>9} "
               f"{str(p.get('UnitCost')):>9} "
-              f"{str(p.get('StockOnHand')):>7}  "
+              f"{str(p.get('StockOnHand')):>7} "
+              f"{str(p.get('UnitOfMeasureCode')):>6}  "
               f"{p.get('Name')}")
-    print(f"\nTotalt {len(po)} produkter i PowerOffice.")
+    print(f"\nTotalt {len(po)} produkter i PowerOffice.\n")
+
+    # ── 1) Hvilket felt i MyStore holder enheten? ──────────────────────────
+    print("=" * 70)
+    print("DIAG A: Alle attributter paa en MyStore-vare (leter etter enhet)")
+    print("=" * 70)
+    r = requests.get(f"{MYSTORE_BASE}/products", headers=mystore_headers(),
+                     params={"page[size]": 1}, timeout=30)
+    if r.status_code == 200:
+        data = r.json().get("data", [])
+        if data:
+            attrs = data[0].get("attributes", {})
+            for k in sorted(attrs):
+                v = attrs[k]
+                if isinstance(v, (dict, list)):
+                    v = json.dumps(v, ensure_ascii=False)[:80]
+                print(f"  {k:<32} = {v}")
+    else:
+        print(f"MyStore GET /products -> {r.status_code}")
+
+    # ── 2) Hvorfor blir ikke 0 paa lager satt? ────────────────────────────
+    print()
+    print("=" * 70)
+    print("DIAG B: Nullsaldo - isolerer hvorfor StockOnHand=0 ikke fester seg")
+    print("=" * 70)
+
+    null_vare = next((p for p in po.values()
+                      if p.get("StockOnHand") is None), None)
+    if not null_vare:
+        print("Ingen vare med tomt lager - hopper over.")
+        return
+
+    pid = str(null_vare.get("Id"))
+    print(f"Testvare: {null_vare.get('Code')} (id={pid}) "
+          f"IsStockItem={null_vare.get('IsStockItem')}\n")
+
+    steg = [
+        ("Steg 1: kun IsStockItem=true",
+         [{"op": "replace", "path": "/IsStockItem", "value": True}]),
+        ("Steg 2: kun StockOnHand=0 (etter at flagget er satt)",
+         [{"op": "replace", "path": "/StockOnHand", "value": 0}]),
+    ]
+    for navn, ops in steg:
+        r = requests.patch(f"{PO_BASE_URL}/products/{pid}",
+                           headers=po_headers(), json=ops, timeout=15)
+        merk = "OK" if r.status_code in (200, 204) else "FEIL"
+        print(f"[{merk}] {navn} -> HTTP {r.status_code}")
+        if r.status_code not in (200, 204) and r.text.strip():
+            print(f"      {r.text[:300]}")
+
+        v = requests.get(f"{PO_BASE_URL}/products/{pid}",
+                         headers=po_headers(), timeout=15)
+        if v.status_code == 200:
+            o = v.json()
+            print(f"      -> IsStockItem={o.get('IsStockItem')} "
+                  f"StockOnHand={o.get('StockOnHand')}")
 
 
 if __name__ == "__main__":
