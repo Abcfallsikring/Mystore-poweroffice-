@@ -218,19 +218,28 @@ def po_get_all_products() -> dict:
 # ─── PowerOffice: oppdater ──────────────────────────────────────────────────
 
 def po_update_product(po_product_id: str, product: dict, updates: dict) -> bool:
-    """Oppdaterer produkt ved å merge updates inn i eksisterende produkt og PUT."""
-    merged = {**product}
-    merged.update(updates)
+    """Oppdaterer produkt ved å bruke RFC 6902 JSON Patch format."""
+    # RFC 6902 JSON Patch: array av operasjoner
+    patch_ops = [
+        {"op": "replace", "path": "/salesPrice", "value": updates.get("salesPrice")}
+        if "salesPrice" in updates else None,
+        {"op": "replace", "path": "/costPrice", "value": updates.get("costPrice")}
+        if "costPrice" in updates else None,
+    ]
+    patch_ops = [op for op in patch_ops if op is not None]
 
-    resp = requests.put(
+    if not patch_ops:
+        return True  # Ingen oppdateringer
+
+    resp = requests.patch(
         f"{PO_BASE_URL}/products/{po_product_id}",
         headers=po_headers(),
-        json=merged,
+        json=patch_ops,
         timeout=15,
     )
     if resp.status_code in (200, 204):
         return True
-    log.warning("PowerOffice PUT produkt %s feil %s: %s",
+    log.warning("PowerOffice PATCH produkt %s feil %s: %s",
                 po_product_id, resp.status_code, resp.text[:200])
     return False
 
