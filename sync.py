@@ -4,6 +4,7 @@ Synkroniserer antall (lager), innpris og utpris for alle produkter.
 
 Kjøres automatisk via GitHub Actions (se .github/workflows/sync.yml).
 Test:  python sync.py test   (viser rådata fra begge API-er)
+Seed:  python sync.py seed   (oppretter testvarer i PowerOffice demo)
 Synk:  python sync.py
 
 Nødvendige GitHub Secrets:
@@ -321,8 +322,37 @@ def test_mode():
     log.info("PowerOffice totalt: %d produkter", len(po))
 
 
+# ─── SEED-modus (opprett testvarer i PowerOffice demo) ──────────────────────
+
+def seed_demo():
+    """Oppretter noen testvarer i PowerOffice (demo) med varenummer fra MyStore,
+    slik at synken har noe å matche mot."""
+    log.info("--- SEED: Henter MyStore-produkter ---")
+    products = mystore_get_all_products()
+    kandidater = [p for p in products if p["stockQuantity"] > 0 and p["price"] > 0][:3]
+
+    for ms in kandidater:
+        payload = {
+            "code": ms["articleNumber"],
+            "name": ms["name"][:100],
+            "salesPrice": ms["price"],
+            "costPrice": ms["purchasePrice"],
+        }
+        resp = requests.post(
+            f"{PO_BASE_URL}/products",
+            headers=po_headers(),
+            json=payload,
+            timeout=30,
+        )
+        print(f"POST /products {ms['articleNumber']} -> {resp.status_code}")
+        print(resp.text[:400])
+
+
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "test":
+    mode = sys.argv[1] if len(sys.argv) > 1 else "sync"
+    if mode == "test":
         test_mode()
+    elif mode == "seed":
+        seed_demo()
     else:
         run_sync()
