@@ -39,9 +39,9 @@ MYSTORE_BASE  = f"https://api.mystore.no/shops/{MYSTORE_SHOP}"
 PO_APP_KEY          = os.environ["PO_APP_KEY"]
 PO_CLIENT_KEY       = os.environ["PO_CLIENT_KEY"]
 PO_SUBSCRIPTION_KEY = os.environ["PO_SUBSCRIPTION_KEY"]
-# Demo/test-miljø (demo-nøkler). Bytt til goapi.poweroffice.net for produksjon.
-PO_BASE_URL  = os.environ.get("PO_BASE_URL", "https://goapitest.poweroffice.net/v2")
-PO_TOKEN_URL = os.environ.get("PO_TOKEN_URL", "https://goapitest.poweroffice.net/OAuth/Token")
+# Demo/test-miljø (demo-nøkler). For produksjon: fjern 'demo/' og 'Demo/' fra URL-ene.
+PO_BASE_URL  = os.environ.get("PO_BASE_URL", "https://goapi.poweroffice.net/demo/v2")
+PO_TOKEN_URL = os.environ.get("PO_TOKEN_URL", "https://goapi.poweroffice.net/Demo/OAuth/Token")
 
 # ─── MyStore (JSON:API, samme format som mystore-onix) ──────────────────────
 
@@ -73,7 +73,7 @@ def _tall(attrs: dict, *keys) -> float:
 def mystore_get_all_products(raw_mode: bool = False) -> list[dict]:
     """
     Henter alle produkter fra MyStore (JSON:API med paginering).
-    raw_mode=True returnerer uflatede attributter (for test).
+    raw_mode=True returnerer hele objektene (for test).
     """
     products = []
     page = 1
@@ -98,7 +98,7 @@ def mystore_get_all_products(raw_mode: bool = False) -> list[dict]:
         for item in raw:
             attrs = item.get("attributes", {})
             if raw_mode:
-                products.append({"id": item.get("id"), "attributes": attrs})
+                products.append(item)  # hele objektet inkl. relationships
                 continue
 
             products.append({
@@ -295,9 +295,25 @@ def test_mode():
     """Viser rådata fra begge API-er slik at feltnavn kan verifiseres."""
     log.info("--- TEST: Henter produkter fra MyStore (rådata) ---")
     raw = mystore_get_all_products(raw_mode=True)
-    for p in raw[:3]:
+    for p in raw[:2]:
         print(json.dumps(p, indent=2, ensure_ascii=False))
     log.info("MyStore totalt: %d produkter", len(raw))
+
+    # Prøv å hente ett enkeltprodukt med alle relasjoner
+    if raw:
+        pid = raw[1].get("id") if len(raw) > 1 else raw[0].get("id")
+        log.info("--- TEST: Henter enkeltprodukt %s med include ---", pid)
+        for inc in ("stock", "prices", "product-stock", "variants"):
+            r = requests.get(
+                f"{MYSTORE_BASE}/products/{pid}",
+                headers=mystore_headers(),
+                params={"include": inc},
+                timeout=30,
+            )
+            print(f"include={inc} -> {r.status_code}")
+            if r.status_code == 200:
+                print(json.dumps(r.json(), indent=2, ensure_ascii=False)[:3000])
+                break
 
     log.info("--- TEST: Henter produkter fra PowerOffice ---")
     po = po_get_all_products()
