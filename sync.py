@@ -218,32 +218,21 @@ def po_get_all_products() -> dict:
 # ─── PowerOffice: oppdater ──────────────────────────────────────────────────
 
 def po_update_product(po_product_id: str, product: dict, updates: dict) -> bool:
-    """Oppdaterer produkt ved å bruke RFC 6902 JSON Patch format."""
-    # RFC 6902 JSON Patch: array av operasjoner
-    patch_ops = [
-        {"op": "replace", "path": "/salesPrice", "value": updates.SalesPrice("salesPrice")}
-        if "salesPrice" in updates else None,
-        {"op": "replace", "path": "/costPrice", "value": updates.get("CostPrice")}
-        if "costPrice" in updates else None,
-    ]
-    patch_ops = [op for op in patch_ops if op is not None]
-
-    if not patch_ops:
-        return True  # Ingen oppdateringer
-
-    resp = requests.patch(
+    """Updates product using PUT with merged object."""
+    merged = dict(product)
+    merged.update(updates)
+    
+    resp = requests.put(
         f"{PO_BASE_URL}/products/{po_product_id}",
         headers=po_headers(),
-        json=patch_ops,
+        json=merged,
         timeout=15,
     )
     if resp.status_code in (200, 204):
         return True
-    log.warning("PowerOffice PATCH produkt %s feil %s: %s",
-                po_product_id, resp.status_code, resp.text[:200])
+    log.warning("PowerOffice PUT produkt %s feil %s: %s",
+                po_product_id, resp.status_code, resp.text)
     return False
-
-
 def po_set_stock(po_product_id: str, quantity: int) -> bool:
     resp = requests.post(
         f"{PO_BASE_URL}/products/{po_product_id}/stockEntries",
