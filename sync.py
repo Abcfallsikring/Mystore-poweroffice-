@@ -218,21 +218,31 @@ def po_get_all_products() -> dict:
 # ─── PowerOffice: oppdater ──────────────────────────────────────────────────
 
 def po_update_product(po_product_id: str, product: dict, updates: dict) -> bool:
-    """Updates product using PUT with merged object."""
-    merged = dict(product)
-    merged.update(updates)
-    
-    resp = requests.put(
+    """Oppdaterer produkt med RFC 6902 JSON Patch (PascalCase paths)."""
+    patch_ops = []
+    if "salesPrice" in updates:
+        patch_ops.append({"op": "replace", "path": "/SalesPrice",
+                          "value": updates["salesPrice"]})
+    if "costPrice" in updates:
+        patch_ops.append({"op": "replace", "path": "/CostPrice",
+                          "value": updates["costPrice"]})
+
+    if not patch_ops:
+        return True
+
+    resp = requests.patch(
         f"{PO_BASE_URL}/products/{po_product_id}",
         headers=po_headers(),
-        json=merged,
+        json=patch_ops,
         timeout=15,
     )
     if resp.status_code in (200, 204):
         return True
-    log.warning("PowerOffice PUT produkt %s feil %s: %s",
+    log.warning("PowerOffice PATCH produkt %s feil %s: %s",
                 po_product_id, resp.status_code, resp.text)
     return False
+
+
 def po_set_stock(po_product_id: str, quantity: int) -> bool:
     resp = requests.post(
         f"{PO_BASE_URL}/products/{po_product_id}/stockEntries",
@@ -355,11 +365,77 @@ def seed_demo():
         print(resp.text[:400])
 
 
+# ─── DIAG-modus (finn riktig oppdateringsformat for PowerOffice) ────────────
+
+def diag_mode():
+    """Viser eksakte feltnavn i PowerOffice-produkt og tester ulike
+    oppdateringsformater mot ETT produkt. Logger full respons for hver."""
+    po = po_get_all_products()
+    if not po:
+        log.error("DIAG: ingen produkter i PowerOffice - kan ikke teste")
+        return
+
+    key, prod = next(iter(po.items()))
+    pid = str(prod.get("Id") or prod.get("id"))
+
+    print("=" * 70)
+    print("DIAG 1: Fullt produktobjekt fra PowerOffice (eksakt feltnavn)")
+    print("=" * 70)
+    print(json.dumps(prod, indent=2, ensure_ascii=False))
+
+    print()
+    print("=" * 70)
+    print(f"DIAG 2: Tester oppdateringsformater mot produkt {key} (id={pid})")
+    print("=" * 70)
+
+    ny_pris = 123.45
+
+    varianter = [
+        ("PATCH JSON-Patch PascalCase",
+         "patch", [{"op": "replace", "path": "/SalesPrice", "value": ny_pris}]),
+        ("PATCH JSON-Patch camelCase",
+         "patch", [{"op": "replace", "path": "/salesPrice", "value": ny_pris}]),
+        ("PATCH merge-patch PascalCase",
+         "patch", {"SalesPrice": ny_pris}),
+        ("PATCH merge-patch camelCase",
+         "patch", {"salesPrice": ny_pris}),
+        ("PUT hele objektet (PascalCase-felt)",
+         "put", {**prod, "SalesPrice": ny_pris}),
+    ]
+
+    for navn, metode, payload in varianter:
+        try:
+            fn = requests.patch if metode == "patch" else requests.put
+            r = fn(f"{PO_BASE_URL}/products/{pid}",
+                   headers=po_headers(), json=payload, timeout=15)
+            status = "OK" if r.status_code in (200, 204) else "FEIL"
+            print(f"\n[{status}] {navn} -> HTTP {r.status_code}")
+            print(f"      payload: {json.dumps(payload)[:200]}")
+            if r.text.strip():
+                print(f"      respons: {r.text[:400]}")
+        except Exception as e:
+            print(f"\n[EXC] {navn} -> {e}")
+
+    print()
+    print("=" * 70)
+    print("DIAG 3: Tester lager-endepunkt (stockEntries)")
+    print("=" * 70)
+    r = requests.post(f"{PO_BASE_URL}/products/{pid}/stockEntries",
+                      headers=po_headers(),
+                      json={"quantity": 5, "entryType": "ManualAdjustment"},
+                      timeout=15)
+    print(f"POST stockEntries -> HTTP {r.status_code}")
+    if r.text.strip():
+        print(f"respons: {r.text[:400]}")
+
+
 if __name__ == "__main__":
     mode = sys.argv[1] if len(sys.argv) > 1 else "sync"
     if mode == "test":
         test_mode()
     elif mode == "seed":
         seed_demo()
+    elif mode == "diag":
+        diag_mode()
     else:
         run_sync()
