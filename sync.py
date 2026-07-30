@@ -8,7 +8,7 @@ Synk:  python sync.py
 
 Nødvendige GitHub Secrets:
   MYSTORE_TOKEN           – API-token fra MyStore (samme som mystore-onix)
-  MYSTORE_PRODUKT_TOKEN   – (valgfri) egen token for produkt-API, som i mystore-onix
+  MYSTORE_PRODUKT_TOKEN   – egen token for produkt-API uten hide-scopes (viser cost/quantity)
   MYSTORE_SHOP            – Butikknavn, f.eks. abcfallsikr202
   PO_APP_KEY              – Application Key fra PowerOffice developer-portal
   PO_CLIENT_KEY           – Client Key fra PowerOffice (API-onboarding)
@@ -101,12 +101,16 @@ def mystore_get_all_products(raw_mode: bool = False) -> list[dict]:
                 products.append(item)  # hele objektet inkl. relationships
                 continue
 
+            # Feltnavn verifisert mot MyStore API (krever token uten hide-scopes):
+            #   price             = utpris
+            #   cost              = innpris
+            #   quantity_physical = fysisk lager
             products.append({
-                "articleNumber": str(attrs.get("sku") or attrs.get("product_number") or item.get("id")).strip(),
+                "articleNumber": str(attrs.get("sku") or item.get("id")).strip(),
                 "name":          _navn(attrs.get("name")),
-                "price":         _tall(attrs, "price", "price_ex_vat", "sales_price", "unit_price"),
-                "purchasePrice": _tall(attrs, "purchase_price", "cost_price", "cost"),
-                "stockQuantity": int(_tall(attrs, "stock", "stock_count", "stock_quantity", "quantity", "number_in_stock")),
+                "price":         _tall(attrs, "price"),
+                "purchasePrice": _tall(attrs, "cost"),
+                "stockQuantity": int(_tall(attrs, "quantity_physical", "quantity")),
             })
 
         links = data.get("links", {}) if isinstance(data, dict) else {}
@@ -249,6 +253,10 @@ def run_sync():
     mystore_products = mystore_get_all_products()
     po_products = po_get_all_products()
 
+    if not po_products:
+        log.warning("PowerOffice har ingen produkter - ingenting aa oppdatere.")
+        return
+
     updated = 0
     not_found = 0
     errors = 0
@@ -297,20 +305,14 @@ def test_mode():
     log.info("--- TEST: Token i bruk: %s ---",
              "MYSTORE_PRODUKT_TOKEN" if os.environ.get("MYSTORE_PRODUKT_TOKEN") else "MYSTORE_TOKEN")
 
-    log.info("--- TEST: Enkeltprodukt 281 (alle felter) ---")
-    r = requests.get(f"{MYSTORE_BASE}/products/281", headers=mystore_headers(), timeout=30)
-    print(f"GET /products/281 -> {r.status_code}")
-    if r.status_code == 200:
-        print(json.dumps(r.json(), indent=2, ensure_ascii=False)[:4000])
-
-    log.info("--- TEST: Sonderer mulige lager-endepunkter ---")
-    for path in ("products/281/stock", "stocks", "product-stocks",
-                 "stock-groups", "stock-groups/1", "warehouses"):
-        r = requests.get(f"{MYSTORE_BASE}/{path}", headers=mystore_headers(),
-                         params={"page[size]": 2}, timeout=30)
-        print(f"GET /{path} -> {r.status_code}")
-        if r.status_code == 200:
-            print(json.dumps(r.json(), indent=2, ensure_ascii=False)[:2500])
+    log.info("--- TEST: Henter alle MyStore-produkter (ferdig mappet) ---")
+    products = mystore_get_all_products()
+    med_lager = [p for p in products if p["stockQuantity"] > 0]
+    med_innpris = [p for p in products if p["purchasePrice"] > 0]
+    log.info("Totalt: %d | med lager > 0: %d | med innpris > 0: %d",
+             len(products), len(med_lager), len(med_innpris))
+    for p in (med_lager[:3] or products[:3]):
+        print(json.dumps(p, indent=2, ensure_ascii=False))
 
     log.info("--- TEST: Henter produkter fra PowerOffice ---")
     po = po_get_all_products()
