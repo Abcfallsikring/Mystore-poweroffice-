@@ -3,24 +3,25 @@ MyStore → PowerOffice produktsynk
 Synkroniserer antall (lager), innpris og utpris for alle produkter.
 
 Kjøres automatisk via GitHub Actions (se .github/workflows/sync.yml).
-Kan også kjøres manuelt: python sync.py
+Test:  python sync.py test   (viser rådata fra begge API-er)
+Synk:  python sync.py
 
-Nødvendige miljøvariabler (legg inn som GitHub Secrets):
-  MYSTORE_TOKEN           – Personal Access Token fra MyStore admin
-  MYSTORE_SHOP            – Butikknavnet ditt (f.eks. abcfallsikring)
+Nødvendige GitHub Secrets:
+  MYSTORE_TOKEN           – API-token fra MyStore (samme som mystore-onix)
+  MYSTORE_PRODUKT_TOKEN   – (valgfri) egen token for produkt-API, som i mystore-onix
+  MYSTORE_SHOP            – Butikknavn, f.eks. abcfallsikr202
   PO_APP_KEY              – Application Key fra PowerOffice developer-portal
-  PO_CLIENT_KEY           – Client Key fra PowerOffice (genereres ved API-onboarding)
+  PO_CLIENT_KEY           – Client Key fra PowerOffice (API-onboarding)
   PO_SUBSCRIPTION_KEY     – Subscription Key fra PowerOffice developer-portal
 """
 
 import os
 import sys
+import json
 import base64
 import logging
 import requests
 from datetime import datetime, timedelta
-
-# ─── Logging ────────────────────────────────────────────────────────────────
 
 logging.basicConfig(
     level=logging.INFO,
@@ -31,44 +32,57 @@ log = logging.getLogger(__name__)
 
 # ─── Konfigurasjon ──────────────────────────────────────────────────────────
 
-MYSTORE_API_KEY    = os.environ["MYSTORE_TOKEN"]         # same secret as mystore-onix repo
-MYSTORE_STORE_NAME = os.environ["MYSTORE_SHOP"]          # same secret as mystore-onix repo
-MYSTORE_BASE_URL   = "https://api.mystore.no/v1"
+MYSTORE_TOKEN = os.environ.get("MYSTORE_PRODUKT_TOKEN") or os.environ["MYSTORE_TOKEN"]
+MYSTORE_SHOP  = os.environ["MYSTORE_SHOP"]
+MYSTORE_BASE  = f"https://api.mystore.no/shops/{MYSTORE_SHOP}"
 
-PO_APP_KEY         = os.environ["PO_APP_KEY"]
-PO_CLIENT_KEY      = os.environ["PO_CLIENT_KEY"]
-PO_SUBSCRIPTION_KEY= os.environ["PO_SUBSCRIPTION_KEY"]
-# Demo/test-miljø (nøklene er demo-nøkler). Bytt til goapi.poweroffice.net for produksjon,
-# eller sett PO_BASE_URL / PO_TOKEN_URL som miljøvariabler.
-PO_BASE_URL        = os.environ.get("PO_BASE_URL", "https://goapitest.poweroffice.net/v2")
-PO_TOKEN_URL       = os.environ.get("PO_TOKEN_URL", "https://goapitest.poweroffice.net/OAuth/Token")
+PO_APP_KEY          = os.environ["PO_APP_KEY"]
+PO_CLIENT_KEY       = os.environ["PO_CLIENT_KEY"]
+PO_SUBSCRIPTION_KEY = os.environ["PO_SUBSCRIPTION_KEY"]
+# Demo/test-miljø (demo-nøkler). Bytt til goapi.poweroffice.net for produksjon.
+PO_BASE_URL  = os.environ.get("PO_BASE_URL", "https://goapitest.poweroffice.net/v2")
+PO_TOKEN_URL = os.environ.get("PO_TOKEN_URL", "https://goapitest.poweroffice.net/OAuth/Token")
 
-# ─── MyStore: hent produkter ────────────────────────────────────────────────
+# ─── MyStore (JSON:API, samme format som mystore-onix) ──────────────────────
 
-def mystore_get_all_products() -> list[dict]:
-    """
-    Henter alle produkter fra MyStore inkl. lager og priser.
-    """
-    headers = {
-        "Authorization": f"Bearer {MYSTORE_API_KEY}",
-        "Accept": "application/json",
-        "X-Store": MYSTORE_STORE_NAME,
+def mystore_headers() -> dict:
+    return {
+        "Authorization": f"Bearer {MYSTORE_TOKEN}",
+        "Content-Type": "application/vnd.api+json",
+        "Accept": "application/vnd.api+json",
     }
 
+
+def _navn(name_val) -> str:
+    if isinstance(name_val, dict):
+        return name_val.get("no") or name_val.get("en") or next(iter(name_val.values()), "") or ""
+    return str(name_val or "")
+
+
+def _tall(attrs: dict, *keys) -> float:
+    for k in keys:
+        v = attrs.get(k)
+        if v is not None and v != "":
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                pass
+    return 0.0
+
+
+def mystore_get_all_products(raw_mode: bool = False) -> list[dict]:
+    """
+    Henter alle produkter fra MyStore (JSON:API med paginering).
+    raw_mode=True returnerer uflatede attributter (for test).
+    """
     products = []
     page = 1
-    page_size = 100
 
     while True:
         resp = requests.get(
-            f"{MYSTORE_BASE_URL}/products",
-            headers=headers,
-            params={
-                "page": page,
-                "pageSize": page_size,
-                "includeStock": "true",
-                "includePrice": "true",
-            },
+            f"{MYSTORE_BASE}/products",
+            headers=mystore_headers(),
+            params={"page[size]": 100, "page[number]": page},
             timeout=30,
         )
 
@@ -77,24 +91,26 @@ def mystore_get_all_products() -> list[dict]:
             resp.raise_for_status()
 
         data = resp.json()
-
-        # OBS: Feltnavnene er basert på MyStore sin CSV-eksport.
-        # Kjør 'python sync.py test' for å se faktiske feltnavn og juster om nødvendig.
-        batch = data.get("products") or data.get("data") or data
-        if not batch:
+        raw = data.get("data", []) if isinstance(data, dict) else []
+        if not raw:
             break
 
-        for p in batch:
+        for item in raw:
+            attrs = item.get("attributes", {})
+            if raw_mode:
+                products.append({"id": item.get("id"), "attributes": attrs})
+                continue
+
             products.append({
-                "articleNumber": p.get("articleNumber") or p.get("sku") or p.get("id"),
-                "name":          p.get("name") or p.get("productName", ""),
-                "price":         float(p.get("price") or p.get("salesPrice") or 0),
-                "purchasePrice": float(p.get("purchasePrice") or p.get("costPrice") or 0),
-                "stockQuantity": int(p.get("physicalStock") or p.get("stockQuantity") or p.get("stock") or 0),
+                "articleNumber": str(attrs.get("sku") or attrs.get("product_number") or item.get("id")).strip(),
+                "name":          _navn(attrs.get("name")),
+                "price":         _tall(attrs, "price", "price_ex_vat", "sales_price", "unit_price"),
+                "purchasePrice": _tall(attrs, "purchase_price", "cost_price", "cost"),
+                "stockQuantity": int(_tall(attrs, "stock", "stock_count", "stock_quantity", "quantity", "number_in_stock")),
             })
 
-        total = data.get("total") or data.get("totalCount") or len(batch)
-        if page * page_size >= total:
+        links = data.get("links", {}) if isinstance(data, dict) else {}
+        if not links.get("next"):
             break
         page += 1
 
@@ -155,9 +171,7 @@ def po_headers() -> dict:
 # ─── PowerOffice: hent produkter ────────────────────────────────────────────
 
 def po_get_all_products() -> dict:
-    """
-    Returnerer en dict: { articleNumber -> produkt-dict fra PowerOffice }
-    """
+    """Returnerer dict: { articleNumber -> produkt fra PowerOffice }"""
     products = {}
     skip = 0
     size = 100
@@ -186,7 +200,7 @@ def po_get_all_products() -> dict:
         for p in batch:
             code = p.get("code") or p.get("articleNumber") or p.get("productCode")
             if code:
-                products[str(code)] = p
+                products[str(code).strip()] = p
 
         if len(batch) < size:
             break
@@ -196,7 +210,7 @@ def po_get_all_products() -> dict:
     return products
 
 
-# ─── PowerOffice: oppdater produkt ──────────────────────────────────────────
+# ─── PowerOffice: oppdater ──────────────────────────────────────────────────
 
 def po_update_product(po_product_id: str, payload: dict) -> bool:
     resp = requests.patch(
@@ -205,40 +219,24 @@ def po_update_product(po_product_id: str, payload: dict) -> bool:
         json=payload,
         timeout=15,
     )
-
     if resp.status_code in (200, 204):
         return True
-
-    log.warning(
-        "PowerOffice PATCH produkt %s feil %s: %s",
-        po_product_id, resp.status_code, resp.text[:200],
-    )
+    log.warning("PowerOffice PATCH produkt %s feil %s: %s",
+                po_product_id, resp.status_code, resp.text[:200])
     return False
 
 
-# ─── PowerOffice: oppdater lagerbeholdning ──────────────────────────────────
-
 def po_set_stock(po_product_id: str, quantity: int) -> bool:
-    """
-    Setter lagerbeholdning via stock-endepunktet.
-    """
     resp = requests.post(
         f"{PO_BASE_URL}/products/{po_product_id}/stockEntries",
         headers=po_headers(),
-        json={
-            "quantity": quantity,
-            "entryType": "ManualAdjustment",
-        },
+        json={"quantity": quantity, "entryType": "ManualAdjustment"},
         timeout=15,
     )
-
     if resp.status_code in (200, 201, 204):
         return True
-
-    log.warning(
-        "PowerOffice stock-oppdatering for %s feil %s: %s",
-        po_product_id, resp.status_code, resp.text[:200],
-    )
+    log.warning("PowerOffice stock-oppdatering for %s feil %s: %s",
+                po_product_id, resp.status_code, resp.text[:200])
     return False
 
 
@@ -255,7 +253,7 @@ def run_sync():
     errors = 0
 
     for ms in mystore_products:
-        article_no = str(ms["articleNumber"])
+        article_no = ms["articleNumber"]
 
         po = po_products.get(article_no)
         if not po:
@@ -278,18 +276,14 @@ def run_sync():
         stock_ok = po_set_stock(po_id, ms["stockQuantity"])
 
         if price_ok and stock_ok:
-            log.info(
-                "OK  %s  |  antall=%d  innpris=%.2f  utpris=%.2f",
-                article_no, ms["stockQuantity"], ms["purchasePrice"], ms["price"],
-            )
+            log.info("OK  %s  |  antall=%d  innpris=%.2f  utpris=%.2f",
+                     article_no, ms["stockQuantity"], ms["purchasePrice"], ms["price"])
             updated += 1
         else:
             errors += 1
 
-    log.info(
-        "=== Ferdig: %d oppdatert, %d ikke funnet i PO, %d feil ===",
-        updated, not_found, errors,
-    )
+    log.info("=== Ferdig: %d oppdatert, %d ikke funnet i PO, %d feil ===",
+             updated, not_found, errors)
 
     if errors > 0:
         sys.exit(1)
@@ -298,23 +292,19 @@ def run_sync():
 # ─── TEST-modus ─────────────────────────────────────────────────────────────
 
 def test_mode():
-    """
-    Kjør med:  python sync.py test
-    Skriver ut rådata fra begge API-er så du kan verifisere feltnavnene.
-    """
-    import json
-    log.info("--- TEST: Henter 3 produkter fra MyStore ---")
-    products = mystore_get_all_products()
-    for p in products[:3]:
+    """Viser rådata fra begge API-er slik at feltnavn kan verifiseres."""
+    log.info("--- TEST: Henter produkter fra MyStore (rådata) ---")
+    raw = mystore_get_all_products(raw_mode=True)
+    for p in raw[:3]:
         print(json.dumps(p, indent=2, ensure_ascii=False))
+    log.info("MyStore totalt: %d produkter", len(raw))
 
-    log.info("--- TEST: Henter 3 produkter fra PowerOffice ---")
+    log.info("--- TEST: Henter produkter fra PowerOffice ---")
     po = po_get_all_products()
     for key, val in list(po.items())[:3]:
         print(json.dumps(val, indent=2, ensure_ascii=False))
+    log.info("PowerOffice totalt: %d produkter", len(po))
 
-
-# ─── Inngangspunkt ──────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "test":
