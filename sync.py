@@ -384,60 +384,118 @@ def diag_mode():
               f"{p.get('Name')}")
     print(f"\nTotalt {len(po)} produkter i PowerOffice.\n")
 
-    # ── 1) Hvilket felt i MyStore holder enheten? ──────────────────────────
+    # ── 1) Hvorfor matcher ikke enkelte varer? ────────────────────────────
     print("=" * 70)
-    print("DIAG A: Alle attributter paa en MyStore-vare (leter etter enhet)")
+    print("DIAG A: Leter etter varer som finnes i PO men ikke matcher MyStore")
     print("=" * 70)
-    r = requests.get(f"{MYSTORE_BASE}/products", headers=mystore_headers(),
-                     params={"page[size]": 1}, timeout=30)
-    if r.status_code == 200:
-        data = r.json().get("data", [])
-        if data:
-            attrs = data[0].get("attributes", {})
-            for k in sorted(attrs):
-                v = attrs[k]
-                if isinstance(v, (dict, list)):
-                    v = json.dumps(v, ensure_ascii=False)[:80]
-                print(f"  {k:<32} = {v}")
-    else:
-        print(f"MyStore GET /products -> {r.status_code}")
 
-    # ── 2) Hvorfor blir ikke 0 paa lager satt? ────────────────────────────
+    ms = mystore_get_all_products()
+    ms_sku = {p["articleNumber"] for p in ms}
+    umatchet = [k for k in po if k not in ms_sku]
+
+    print(f"MyStore: {len(ms)} varer.  PowerOffice: {len(po)} varer.")
+    print(f"Uten match i MyStore: {umatchet}\n")
+
+    # Direkte oppslag paa kjent vare (G-1179-S/M har MyStore-id 566)
+    print("Direkte oppslag GET /products/566:")
+    d = requests.get(f"{MYSTORE_BASE}/products/566",
+                     headers=mystore_headers(), timeout=30)
+    print(f"  HTTP {d.status_code}")
+    if d.status_code == 200:
+        a = d.json().get("data", {}).get("attributes", {})
+        print(f"  sku    = {a.get('sku')!r}")
+        print(f"  navn   = {_navn(a.get('name'))!r}")
+        print(f"  status = {a.get('status')!r}")
+        print(f"  pris   = {a.get('price')!r}  kost = {a.get('cost')!r}")
+        print(f"  lager  = {a.get('quantity_physical')!r}")
+        print(f"  Var 566 med i listen paa {len(ms)} varer? "
+              f"{'JA' if str(a.get('sku')).strip() in ms_sku else 'NEI'}")
+    else:
+        print(f"  {d.text[:300]}")
+    print()
+
+    # Hvor mange MyStore-varer mangler SKU helt?
+    tomme = [p for p in ms if not p["articleNumber"].isprintable()
+             or p["articleNumber"].isdigit()]
+    print(f"MyStore-varer der SKU er tom (faller tilbake paa intern id): "
+          f"{len(tomme)}")
+    if tomme[:5]:
+        print(f"  eksempler: {[p['articleNumber'] for p in tomme[:5]]}\n")
+
+    # Finnes de umatchede kodene i raadata - som sku, ean eller variant?
+    print("Soeker etter kodene i MyStore raadata (sku / ean / navn):")
+    raa = mystore_get_all_products(raw_mode=True)
+    for kode in umatchet:
+        treff = []
+        for item in raa:
+            a = item.get("attributes", {})
+            felter = {
+                "sku": a.get("sku"),
+                "ean": a.get("ean"),
+                "manufacturer_sku": a.get("manufacturer_sku"),
+                "navn": _navn(a.get("name")),
+            }
+            for fnavn, verdi in felter.items():
+                if verdi and kode.lower() in str(verdi).lower():
+                    treff.append(f"id={item.get('id')} {fnavn}={verdi!r}")
+        print(f"\n  {kode}:")
+        if treff:
+            for t in treff[:5]:
+                print(f"    TREFF  {t}")
+        else:
+            print("    ingen treff i /products - ligger trolig som variant")
+
+    # Har MyStore et eget variant-endepunkt?
+    print("\nSonderer variant-endepunkter i MyStore:")
+    for sti in ("variants", "product-variants", "products/variants"):
+        v = requests.get(f"{MYSTORE_BASE}/{sti}", headers=mystore_headers(),
+                         params={"page[size]": 2}, timeout=30)
+        print(f"  GET /{sti} -> {v.status_code}")
+        if v.status_code == 200:
+            d = v.json().get("data", [])
+            if d:
+                print(f"    {json.dumps(d[0], ensure_ascii=False)[:500]}")
+
+    # ── 2) KRITISK: nullstilles en vare som HAR lager? ────────────────────
     print()
     print("=" * 70)
-    print("DIAG B: Nullsaldo - isolerer hvorfor StockOnHand=0 ikke fester seg")
+    print("DIAG B: Gaar en vare fra positivt lager til 0?")
     print("=" * 70)
 
-    null_vare = next((p for p in po.values()
-                      if p.get("StockOnHand") is None), None)
-    if not null_vare:
-        print("Ingen vare med tomt lager - hopper over.")
+    vare = next((p for p in po.values()
+                 if (p.get("StockOnHand") or 0) > 0), None)
+    if not vare:
+        print("Ingen vare med positivt lager - kan ikke teste nedtelling.")
         return
 
-    pid = str(null_vare.get("Id"))
-    print(f"Testvare: {null_vare.get('Code')} (id={pid}) "
-          f"IsStockItem={null_vare.get('IsStockItem')}\n")
+    pid = str(vare.get("Id"))
+    start = vare.get("StockOnHand")
+    print(f"Testvare: {vare.get('Code')} (id={pid}) startlager={start}\n")
 
-    steg = [
-        ("Steg 1: kun IsStockItem=true",
-         [{"op": "replace", "path": "/IsStockItem", "value": True}]),
-        ("Steg 2: kun StockOnHand=0 (etter at flagget er satt)",
-         [{"op": "replace", "path": "/StockOnHand", "value": 0}]),
-    ]
-    for navn, ops in steg:
-        r = requests.patch(f"{PO_BASE_URL}/products/{pid}",
-                           headers=po_headers(), json=ops, timeout=15)
+    def les():
+        v = requests.get(f"{PO_BASE_URL}/products/{pid}",
+                         headers=po_headers(), timeout=15)
+        return v.json() if v.status_code == 200 else {}
+
+    for navn, verdi in [("Setter lager til 0", 0),
+                        (f"Setter lager tilbake til {start}", start)]:
+        r = requests.patch(
+            f"{PO_BASE_URL}/products/{pid}",
+            headers=po_headers(),
+            json=[{"op": "replace", "path": "/StockOnHand", "value": verdi}],
+            timeout=15,
+        )
         merk = "OK" if r.status_code in (200, 204) else "FEIL"
         print(f"[{merk}] {navn} -> HTTP {r.status_code}")
         if r.status_code not in (200, 204) and r.text.strip():
             print(f"      {r.text[:300]}")
+        o = les()
+        print(f"      -> StockOnHand={o.get('StockOnHand')} "
+              f"StockAvailable={o.get('StockAvailable')}")
 
-        v = requests.get(f"{PO_BASE_URL}/products/{pid}",
-                         headers=po_headers(), timeout=15)
-        if v.status_code == 200:
-            o = v.json()
-            print(f"      -> IsStockItem={o.get('IsStockItem')} "
-                  f"StockOnHand={o.get('StockOnHand')}")
+    print("\nKONKLUSJON: hvis 'Setter lager til 0' ga StockOnHand=0.0 eller")
+    print("None, nullstilles varen korrekt. Star den fortsatt paa "
+          f"{start}, er dette en reell feil.")
 
 
 if __name__ == "__main__":
