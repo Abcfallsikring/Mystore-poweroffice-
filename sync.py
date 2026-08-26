@@ -39,9 +39,10 @@ MYSTORE_BASE  = f"https://api.mystore.no/shops/{MYSTORE_SHOP}"
 PO_APP_KEY          = os.environ["PO_APP_KEY"]
 PO_CLIENT_KEY       = os.environ["PO_CLIENT_KEY"]
 PO_SUBSCRIPTION_KEY = os.environ["PO_SUBSCRIPTION_KEY"]
-# Demo/test-miljø (demo-nøkler). For produksjon: fjern 'demo/' og 'Demo/' fra URL-ene.
-PO_BASE_URL  = os.environ.get("PO_BASE_URL", "https://goapi.poweroffice.net/demo/v2")
-PO_TOKEN_URL = os.environ.get("PO_TOKEN_URL", "https://goapi.poweroffice.net/Demo/OAuth/Token")
+# Produksjonsmiljø. For å teste mot demo: sett miljøvariablene PO_BASE_URL/PO_TOKEN_URL
+# til https://goapi.poweroffice.net/demo/v2 og https://goapi.poweroffice.net/Demo/OAuth/Token.
+PO_BASE_URL  = os.environ.get("PO_BASE_URL", "https://goapi.poweroffice.net/v2")
+PO_TOKEN_URL = os.environ.get("PO_TOKEN_URL", "https://goapi.poweroffice.net/OAuth/Token")
 
 # Synkroniser lagerantall. Krever at varen settes som lagervare (IsStockItem)
 # i PowerOffice - da blir lagerfeltene ogsaa synlige i GUI.
