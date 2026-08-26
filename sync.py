@@ -32,13 +32,15 @@ log = logging.getLogger(__name__)
 
 # ─── Konfigurasjon ──────────────────────────────────────────────────────────
 
-MYSTORE_TOKEN = os.environ.get("MYSTORE_PRODUKT_TOKEN") or os.environ["MYSTORE_TOKEN"]
-MYSTORE_SHOP  = os.environ["MYSTORE_SHOP"]
+MYSTORE_TOKEN = (os.environ.get("MYSTORE_PRODUKT_TOKEN") or os.environ["MYSTORE_TOKEN"]).strip()
+MYSTORE_SHOP  = os.environ["MYSTORE_SHOP"].strip()
 MYSTORE_BASE  = f"https://api.mystore.no/shops/{MYSTORE_SHOP}"
 
-PO_APP_KEY          = os.environ["PO_APP_KEY"]
-PO_CLIENT_KEY       = os.environ["PO_CLIENT_KEY"]
-PO_SUBSCRIPTION_KEY = os.environ["PO_SUBSCRIPTION_KEY"]
+# .strip() fjerner usynlige mellomrom/linjeskift som lett sniker seg med
+# naar en nokkel limes inn fra en portal (spesielt paa mobil).
+PO_APP_KEY          = os.environ["PO_APP_KEY"].strip()
+PO_CLIENT_KEY       = os.environ["PO_CLIENT_KEY"].strip()
+PO_SUBSCRIPTION_KEY = os.environ["PO_SUBSCRIPTION_KEY"].strip()
 # Produksjonsmiljø. For å teste mot demo: sett miljøvariablene PO_BASE_URL/PO_TOKEN_URL
 # til https://goapi.poweroffice.net/demo/v2 og https://goapi.poweroffice.net/Demo/OAuth/Token.
 PO_BASE_URL  = os.environ.get("PO_BASE_URL", "https://goapi.poweroffice.net/v2")
