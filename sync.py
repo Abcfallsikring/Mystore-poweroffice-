@@ -118,7 +118,9 @@ def mystore_get_all_products(raw_mode: bool = False) -> list[dict]:
                 "name":          _navn(attrs.get("name")),
                 "price":         _tall(attrs, "price"),
                 "purchasePrice": _tall(attrs, "cost"),
-                "stockQuantity": int(_tall(attrs, "quantity_physical", "quantity")),
+                # PowerOffice godtar ikke negativt lager (StockOnHand >= 0).
+# MyStore kan rapportere negativt lager ved overselling - klem til 0.
+"stockQuantity": max(0, int(_tall(attrs, "quantity_physical", "quantity"))),
             })
 
         links = data.get("links", {}) if isinstance(data, dict) else {}
