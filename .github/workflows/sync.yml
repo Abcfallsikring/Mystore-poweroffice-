@@ -1,8 +1,8 @@
 name: MyStore -> PowerOffice synk
 
 on:
-  # Kjoeres automatisk kl. 06:00 norsk tid (05:00 UTC) hver natt
-    schedule:
+  # Kjoeres automatisk paa hvert klokkeslett (00:00, 01:00, 02:00 ... UTC)
+  schedule:
     - cron: "0 * * * *"
 
   # Kan ogsaa trigges manuelt fra GitHub Actions-fanen
