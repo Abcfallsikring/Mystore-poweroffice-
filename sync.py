@@ -30,7 +30,7 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-# ─── Konfigurasjon ──────────────────────────────────────────────────────────
+# ─── Konfigurasjon ─────────────────────────────────────────────────────────
 
 MYSTORE_TOKEN = (os.environ.get("MYSTORE_PRODUKT_TOKEN") or os.environ["MYSTORE_TOKEN"]).strip()
 MYSTORE_SHOP  = os.environ["MYSTORE_SHOP"].strip()
@@ -119,8 +119,8 @@ def mystore_get_all_products(raw_mode: bool = False) -> list[dict]:
                 "price":         _tall(attrs, "price"),
                 "purchasePrice": _tall(attrs, "cost"),
                 # PowerOffice godtar ikke negativt lager (StockOnHand >= 0).
-# MyStore kan rapportere negativt lager ved overselling - klem til 0.
-"stockQuantity": max(0, int(_tall(attrs, "quantity_physical", "quantity"))),
+                # MyStore kan rapportere negativt lager ved overselling - klem til 0.
+                "stockQuantity": max(0, int(_tall(attrs, "quantity_physical", "quantity"))),
             })
 
         links = data.get("links", {}) if isinstance(data, dict) else {}
@@ -263,12 +263,17 @@ def po_update_product(po_product_id: str, product: dict, ms: dict) -> bool:
     if not patch_ops:
         return True
 
-    resp = requests.patch(
-        f"{PO_BASE_URL}/products/{po_product_id}",
-        headers=po_headers(),
-        json=patch_ops,
-        timeout=15,
-    )
+    try:
+        resp = requests.patch(
+            f"{PO_BASE_URL}/products/{po_product_id}",
+            headers=po_headers(),
+            json=patch_ops,
+            timeout=30,
+        )
+    except requests.exceptions.RequestException as e:
+        # Nettverksfeil/timeout paa ETT produkt skal ikke stoppe hele synken.
+        log.warning("PowerOffice PATCH produkt %s nettverksfeil: %s", po_product_id, e)
+        return False
     if resp.status_code in (200, 204):
         return True
     log.warning("PowerOffice PATCH produkt %s feil %s: %s",
