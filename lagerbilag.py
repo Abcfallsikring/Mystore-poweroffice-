@@ -123,8 +123,8 @@ TILGANGER_BEHOV = {
     "Bilag (postering)":       ("voucher",),
     "Kontotransaksjoner":      ("accounttransaction",),
     "Hovedbokskontoer":        ("generalledger", "accountingsetting"),
-    "Mva-koder":               ("vatcode", "accountingsetting"),
-    "Sperredato":              ("lockdate", "accountingsetting"),
+    "Mva-koder":               ("vatcode", "accountingsetting", "commonservices", "generalledger"),
+    "Sperredato":              ("lockdate", "accountingsetting", "commonservices", "generalledger"),
 }
 
 
