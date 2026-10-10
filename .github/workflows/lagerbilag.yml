@@ -1,0 +1,46 @@
+name: Lagerregulering (1460) til PowerOffice
+
+on:
+  # AV inntil testet og godkjent. Naar klar: fjern # paa de to linjene under.
+  # Kjoerer hver natt kl. 00:20 UTC (02:20 sommertid / 01:20 vintertid)
+  # og regulerer per gaarsdagens dato.
+  # schedule:
+  #   - cron: "20 0 * * *"
+
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "lagerverdi = kun vis tall (trygt)  |  lagerbilag = poster bilag"
+        required: true
+        default: "lagerverdi"
+        type: choice
+        options: [lagerverdi, lagerbilag]
+      dato:
+        description: "Bilagsdato AAAA-MM-DD (tom = i gaar)"
+        required: false
+        default: ""
+
+jobs:
+  lager:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Kjor lagerregulering
+        env:
+          MYSTORE_TOKEN:         ${{ secrets.MYSTORE_TOKEN }}
+          MYSTORE_PRODUKT_TOKEN: ${{ secrets.MYSTORE_PRODUKT_TOKEN }}
+          MYSTORE_SHOP:          ${{ secrets.MYSTORE_SHOP }}
+          PO_APP_KEY:            ${{ secrets.PO_APP_KEY }}
+          PO_CLIENT_KEY:         ${{ secrets.PO_CLIENT_KEY }}
+          PO_SUBSCRIPTION_KEY:   ${{ secrets.PO_SUBSCRIPTION_KEY }}
+          LAGER_KONTO:           "1460"
+          LAGER_MOTKONTO:        "4390"
+          LAGER_MIN_DIFF:        "1"
+          # Maa settes til "true" foer bilag faktisk posteres
+          LAGERBILAG_ENABLED:    "false"
+        run: python lagerbilag.py ${{ github.event.inputs.mode || 'lagerbilag' }} "${{ github.event.inputs.dato }}"
