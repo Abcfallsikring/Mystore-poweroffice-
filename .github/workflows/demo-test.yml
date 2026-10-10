@@ -1,0 +1,62 @@
+name: DEMO-test mot PowerOffice demo
+
+# Kun manuell. Leser fra ekte Mystore (kun lesing) og skriver KUN til PowerOffice DEMO.
+# Bruker egne demo-noekler (PO_DEMO_*), aldri produksjonsnoeklene.
+
+on:
+  workflow_dispatch:
+    inputs:
+      jobb:
+        description: "Hva skal testes"
+        required: true
+        default: "ordre-inspiser"
+        type: choice
+        options:
+          - ordre-inspiser     # vis raadata fra en Mystore-ordre
+          - ordre-torr         # vis hvilke ordre som ville blitt fakturautkast
+          - ordre-kjor         # lag fakturautkast i DEMO
+          - lager-torr         # vis lagerregulering
+          - lager-kjor         # poster lagerbilag i DEMO
+      antall:
+        description: "Maks antall ordre (ordre-jobber)"
+        required: false
+        default: "5"
+
+jobs:
+  demo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      MYSTORE_TOKEN:         ${{ secrets.MYSTORE_TOKEN }}
+      MYSTORE_PRODUKT_TOKEN: ${{ secrets.MYSTORE_PRODUKT_TOKEN }}
+      MYSTORE_SHOP:          ${{ secrets.MYSTORE_SHOP }}
+      PO_APP_KEY:            ${{ secrets.PO_DEMO_APP_KEY }}
+      PO_CLIENT_KEY:         ${{ secrets.PO_DEMO_CLIENT_KEY }}
+      PO_SUBSCRIPTION_KEY:   ${{ secrets.PO_DEMO_SUBSCRIPTION_KEY }}
+      PO_BASE_URL:           https://goapi.poweroffice.net/demo/v2
+      PO_TOKEN_URL:          https://goapi.poweroffice.net/Demo/OAuth/Token
+      KUN_DEMO:              "true"
+      ORDRE_ENABLED:         "true"
+      LAGERBILAG_ENABLED:    "true"
+      ANTALL:                ${{ github.event.inputs.antall }}
+    steps:
+      - name: Stopp hvis demo-noekler mangler
+        run: |
+          if [ -z "$PO_APP_KEY" ] || [ -z "$PO_CLIENT_KEY" ] || [ -z "$PO_SUBSCRIPTION_KEY" ]; then
+            echo "Mangler PO_DEMO_APP_KEY / PO_DEMO_CLIENT_KEY / PO_DEMO_SUBSCRIPTION_KEY i Secrets."
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Kjor ${{ github.event.inputs.jobb }}
+        run: |
+          case "${{ github.event.inputs.jobb }}" in
+            ordre-inspiser) python mystore_til_po.py inspiser ;;
+            ordre-torr)     python mystore_til_po.py torr ;;
+            ordre-kjor)     python mystore_til_po.py kjor ;;
+            lager-torr)     python lagerbilag.py lagerverdi ;;
+            lager-kjor)     python lagerbilag.py lagerbilag ;;
+          esac
