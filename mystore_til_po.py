@@ -30,6 +30,7 @@ FRA_ORDRE_ID    = int(os.environ.get("FRA_ORDRE_ID", "0"))     # overfoer kun or
 ORDRE_STATUS    = os.environ.get("PO_ORDRE_STATUS", "Draft")   # Draft = fakturautkast
 # Vipps/cash-merket legges i Bestillingsnr. (PurchaseOrderReference) sammen med ordrens referanse
 FRAKT_VAREKODE  = os.environ.get("FRAKT_VAREKODE", "")         # valgfri varekode for frakt i PO
+OPPRETT_VARER   = os.environ.get("OPPRETT_VARER", "true").lower() == "true"  # lag varer som mangler i PO
 ORDRE_ENABLED   = os.environ.get("ORDRE_ENABLED", "false").lower() == "true"
 KUN_DEMO        = os.environ.get("KUN_DEMO", "true").lower() == "true"
 
@@ -173,6 +174,26 @@ def po_finn_eller_lag_prosjekt(navn: str, kunde_id, skriv: bool) -> tuple[int | 
     return int(r.json()["Id"]), f"prosjekt opprettet: {navn}"
 
 
+def po_opprett_vare(l: dict) -> bool:
+    """Oppretter en vare i PowerOffice fra en Mystore-ordrelinje (varenr, navn, veil. pris, kostpris)."""
+    kode = _tekst(l, "sku", "product_sku")
+    payload = {
+        "Code": kode,
+        "Name": (_tekst(l, "name", "title") or kode)[:400],
+        "ProductType": "Product",
+        "UnitPrice": _tall(l, "original_price_without_dealer", "original_price", "final_price", "price") or 0,
+        "UnitCost": _tall(l, "cost") or 0,
+    }
+    ean = _tekst(l, "ean")
+    if ean:
+        payload["Gtin"] = ean
+    r = requests.post(f"{PO_BASE_URL}/Products", headers=po_headers(), json=payload, timeout=30)
+    if r.status_code in (200, 201):
+        return True
+    log.warning("Kunne ikke opprette vare %s: %s %s", kode, r.status_code, r.text[:300])
+    return False
+
+
 def kommentar(o: dict, inc: list) -> str:
     """Kundens/butikkens kommentar paa ordren (feltet 'Kommentar' i Mystore)."""
     tekst = _tekst(o, "comment", "comments", "customer_comment", "order_comment", "note", "notes", "message")
@@ -307,11 +328,23 @@ def overfor(skriv: bool):
             prosjekt_id, prosjekt_info = None, "-"
             if _tekst(attrs, "reference"):
                 prosjekt_id, prosjekt_info = po_finn_eller_lag_prosjekt(_tekst(attrs, "reference"), kunde_id, skriv)
+            # Varer som mangler i PowerOffice opprettes foerst (som i dag), saa linjen kobles til varen
+            nye_varer = []
+            for l in linjer:
+                kode = _tekst(l, "sku", "product_sku")
+                if kode and kode not in varekoder and OPPRETT_VARER:
+                    if not skriv:
+                        nye_varer.append(kode)
+                    elif po_opprett_vare(l):
+                        varekoder.add(kode)
+                        nye_varer.append(kode)
             payload = bygg_ordre(oid, attrs, linjer, inc, kunde_id, varekoder, prosjekt_id)
             sum_eks = sum((l.get("ProductUnitPrice") or 0) * l.get("Quantity", 0) * (1 - (l.get("Allowance") or 0) / 100)
                           for l in payload["SalesOrderLines"])
             print(f"Ordre {oid}: {kunde_info} | {len(payload['SalesOrderLines'])} linjer | "
                   f"netto {sum_eks:,.2f} kr | {prosjekt_info} | bestillingsnr: {payload.get('PurchaseOrderReference', '-')}")
+            if nye_varer:
+                print(f"    {'Nye varer' if skriv else 'NYE varer (opprettes)'}: {', '.join(nye_varer)}")
             for l in payload["SalesOrderLines"]:
                 if l.get("LineType") == "Text":
                     print(f"    (tekst)          {l['Description']}")
