@@ -52,6 +52,9 @@ def main(skriv: bool):
         if r.status_code in (200, 201):
             ok += 1
             print(linje + "  -> opprettet")
+        elif r.status_code == 400 and "is in use" in r.text:
+            # Varen finnes allerede i PO (PO-listen kan vaere avkortet) - ikke en feil
+            print(linje + "  -> finnes allerede")
         else:
             feil += 1
             print(linje + f"  -> FEIL {r.status_code}: {r.text[:200]}")
