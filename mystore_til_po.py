@@ -17,6 +17,7 @@ Sikringer:
 import os
 import sys
 import json
+import html
 import logging
 import requests
 
@@ -31,6 +32,7 @@ ORDRE_STATUS    = os.environ.get("PO_ORDRE_STATUS", "Draft")   # Draft = faktura
 # Vipps/cash-merket legges i Bestillingsnr. (PurchaseOrderReference) sammen med ordrens referanse
 FRAKT_VAREKODE  = os.environ.get("FRAKT_VAREKODE", "")         # valgfri varekode for frakt i PO
 OPPRETT_VARER   = os.environ.get("OPPRETT_VARER", "true").lower() == "true"  # lag varer som mangler i PO
+PRODUKT_SALGSKONTO = int(os.environ.get("PRODUKT_SALGSKONTO", "3000"))    # paakrevd ved ny vare i PO
 ORDRE_ENABLED   = os.environ.get("ORDRE_ENABLED", "false").lower() == "true"
 KUN_DEMO        = os.environ.get("KUN_DEMO", "true").lower() == "true"
 
@@ -50,7 +52,8 @@ def _tekst(d: dict, *keys) -> str:
     for k in keys:
         v = d.get(k)
         if v not in (None, ""):
-            return _navn(v).strip()
+            # Mystore leverer tekst med HTML-koder (&oslash; &nbsp;) - gjoer om til vanlig tekst
+            return html.unescape(_navn(v)).replace("\xa0", " ").strip()
     return ""
 
 
@@ -181,6 +184,7 @@ def po_opprett_vare(l: dict) -> bool:
         "Code": kode,
         "Name": (_tekst(l, "name", "title") or kode)[:400],
         "ProductType": "Product",
+        "StandardSalesAccount": PRODUKT_SALGSKONTO,
         "UnitPrice": _tall(l, "original_price_without_dealer", "original_price", "final_price", "price") or 0,
         "UnitCost": _tall(l, "cost") or 0,
     }
@@ -219,9 +223,23 @@ def betalingsmerke(o: dict, inc: list) -> str:
     return ""
 
 
+def vipps_id(o: dict) -> str:
+    """Vipps-transaksjons-ID fra ordren (vises som 'Vipps ID' i Mystore, f.eks. T-1791149046-...)."""
+    for k, v in o.items():
+        kl = k.lower()
+        if v and isinstance(v, (str, int)) and ("vipps" in kl or "transaction" in kl or "payment_id" in kl or "payment_reference" in kl):
+            return str(v).strip()[:100]
+    return ""
+
+
 def bygg_ordre(oid, o: dict, linjer: list, inc: list, kunde_id, varekoder: set, prosjekt_id=None) -> dict:
     # Som iizy: tekstlinje "Ordre <nr>" oeverst
     po_linjer = [{"LineType": "Text", "Description": f"Ordre {oid}"}]
+    # Vipps-ordre er allerede betalt: synlig merke paa fakturaen, med Vipps ID
+    if betalingsmerke(o, inc) == "Vipps":
+        vid = vipps_id(o)
+        po_linjer.append({"LineType": "Text",
+                          "Description": f"BETALT MED VIPPS{' - Vipps ID ' + vid if vid else ''}"})
     # Kommentaren fra Mystore som tekstlinje(r) rett under (maks 400 tegn per linje)
     for avsnitt in kommentar(o, inc).splitlines():
         avsnitt = avsnitt.strip()
@@ -284,7 +302,7 @@ def bygg_ordre(oid, o: dict, linjer: list, inc: list, kunde_id, varekoder: set, 
     return {k: v for k, v in payload.items() if v is not None}
 
 
-# ─── Moduser ────────────────────────────────────────────────────────────────
+# ─── Moduser ───────────────────────────────────────────────────────────────
 
 def inspiser():
     ordre = ms_sendte_ordre(1)
