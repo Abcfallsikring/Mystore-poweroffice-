@@ -28,7 +28,7 @@ SENDT_STATUS_ID = os.environ.get("MYSTORE_SENDT_STATUS_ID", "3")
 ANTALL          = int(os.environ.get("ANTALL", "5"))           # maks ordre per kjoering
 FRA_ORDRE_ID    = int(os.environ.get("FRA_ORDRE_ID", "0"))     # overfoer kun ordre med id >= denne
 ORDRE_STATUS    = os.environ.get("PO_ORDRE_STATUS", "Draft")   # Draft = fakturautkast
-MERKING_FELT    = os.environ.get("MERKING_FELT", "PurchaseOrderReference")  # hvor "Vipps/cash" settes
+# Vipps/cash-merket legges i Bestillingsnr. (PurchaseOrderReference) sammen med ordrens referanse
 FRAKT_VAREKODE  = os.environ.get("FRAKT_VAREKODE", "")         # valgfri varekode for frakt i PO
 ORDRE_ENABLED   = os.environ.get("ORDRE_ENABLED", "false").lower() == "true"
 KUN_DEMO        = os.environ.get("KUN_DEMO", "true").lower() == "true"
@@ -116,10 +116,9 @@ def po_varekoder() -> set:
 
 def po_finn_eller_lag_kunde(o: dict, skriv: bool) -> tuple[int | None, str]:
     orgnr = _tekst(o, "company_number").replace(" ", "")
-    epost = _tekst(o, "email")
+    epost = _tekst(o, "customer_address_email", "billing_address_email", "email")
     navn = (_tekst(o, "billing_address_company", "customer_address_company", "shipping_address_company")
-            or " ".join(filter(None, [_tekst(o, "billing_address_firstname", "customer_address_firstname"),
-                                      _tekst(o, "billing_address_lastname", "customer_address_lastname")]))
+            or _tekst(o, "billing_address_name", "customer_address_name", "shipping_address_name")
             or epost or "Ukjent kunde")
 
     treff = []
@@ -138,11 +137,11 @@ def po_finn_eller_lag_kunde(o: dict, skriv: bool) -> tuple[int | None, str]:
         "OrganizationNumber": orgnr or None,
         "EmailAddress": epost or None,
         "InvoiceEmailAddress": epost or None,
-        "PhoneNumber": _tekst(o, "billing_address_phone", "shipping_address_phone") or None,
+        "PhoneNumber": _tekst(o, "customer_address_phone", "billing_address_phone", "shipping_address_phone") or None,
         "MailAddress": {
-            "AddressLine1": _tekst(o, "billing_address_address1", "shipping_address_address1"),
-            "ZipCode": _tekst(o, "billing_address_zip", "shipping_address_zip"),
-            "City": _tekst(o, "billing_address_city", "shipping_address_city"),
+            "AddressLine1": _tekst(o, "billing_address_address", "customer_address_address", "shipping_address_address"),
+            "ZipCode": _tekst(o, "billing_address_zipcode", "customer_address_zipcode", "shipping_address_zipcode"),
+            "City": _tekst(o, "billing_address_city", "customer_address_city", "shipping_address_city"),
             "CountryCode": "NO",
         },
     }
@@ -155,7 +154,8 @@ def po_finn_eller_lag_kunde(o: dict, skriv: bool) -> tuple[int | None, str]:
 
 def betalingsmerke(o: dict, inc: list) -> str:
     """Vipps/cash-merke. Feltnavn bekreftes med 'inspiser'."""
-    tekst = _tekst(o, "payment_method", "payment_method_name", "payment_type", "payment").lower()
+    # Mystore: payment_module = teknisk navn (invoice, vipps, klarna ...), payment_method = visningsnavn
+    tekst = (_tekst(o, "payment_module") + " " + _tekst(o, "payment_method")).lower().strip()
     if not tekst:
         for i in inc:
             if "payment" in str(i.get("type", "")):
@@ -168,17 +168,27 @@ def betalingsmerke(o: dict, inc: list) -> str:
 
 
 def bygg_ordre(oid, o: dict, linjer: list, inc: list, kunde_id, varekoder: set) -> dict:
-    po_linjer = []
+    # Som iizy: tekstlinje "Ordre <nr>" oeverst
+    po_linjer = [{"LineType": "Text", "Description": f"Ordre {oid}"}]
     for l in linjer:
         kode = _tekst(l, "sku", "product_sku")
         antall = _tall(l, "quantity", "qty") or 1
-        pris = _tall(l, "price_ex_vat", "price_excl_vat", "unit_price_ex_vat", "price")
-        rabatt = _tall(l, "discount_percent", "discount") or 0
+        # Som iizy: veiledende pris + forhandlerrabatt i %, kostpris paa linjen.
+        #   original_price_without_dealer = veiledende pris eks. mva (100)
+        #   final_price                   = det kunden betaler eks. mva (80) -> rabatt 20 %
+        netto = _tall(l, "final_price", "price")
+        brutto = _tall(l, "original_price_without_dealer", "original_price") or netto
+        kost = _tall(l, "cost")
+        mva = _tall(l, "tax_rate")
         linje = {"Quantity": antall, "Description": _tekst(l, "name", "title")[:400]}
-        if pris is not None:
-            linje["ProductUnitPrice"] = pris
-        if rabatt and 0 < rabatt <= 100:
-            linje["Allowance"] = rabatt
+        if brutto is not None:
+            linje["ProductUnitPrice"] = brutto
+            if netto is not None and brutto > 0 and netto < brutto:
+                linje["Allowance"] = round((1 - netto / brutto) * 100, 4)
+        if kost:
+            linje["ProductUnitCost"] = kost
+        if mva is not None and mva != 25 and not (kode and kode in varekoder):
+            log.warning("Linje %s har %s %% mva men finnes ikke i PO - havner paa standard salgskonto", kode, mva)
         if kode and kode in varekoder:
             linje["ProductCode"] = kode
         else:
@@ -202,12 +212,14 @@ def bygg_ordre(oid, o: dict, linjer: list, inc: list, kunde_id, varekoder: set) 
         "ExternalImportReference": f"MYSTORE-{oid}",
         "ImportedOrderNo": int(oid),
         "SalesOrderDate": (_tekst(o, "created_at") or "")[:10] or None,
-        "CustomerReference": _tekst(o, "reference", "customer_reference")[:100] or None,
+        "DeliveryDate": __import__("datetime").date.today().isoformat(),
+        # Som iizy: kontaktperson i "Deres referanse"
+        "CustomerReference": _tekst(o, "customer_address_name", "billing_address_name")[:100] or None,
         "SalesOrderLines": po_linjer,
     }
-    merke = betalingsmerke(o, inc)
-    if merke:
-        payload[MERKING_FELT] = merke
+    bestnr = ", ".join(filter(None, [_tekst(o, "reference"), betalingsmerke(o, inc)]))
+    if bestnr:
+        payload["PurchaseOrderReference"] = bestnr[:100]
     return {k: v for k, v in payload.items() if v is not None}
 
 
@@ -251,12 +263,17 @@ def overfor(skriv: bool):
             attrs, linjer, inc = ms_ordre_detalj(oid)
             kunde_id, kunde_info = po_finn_eller_lag_kunde(attrs, skriv)
             payload = bygg_ordre(oid, attrs, linjer, inc, kunde_id, varekoder)
-            sum_eks = sum((l.get("ProductUnitPrice") or 0) * l["Quantity"] for l in payload["SalesOrderLines"])
+            sum_eks = sum((l.get("ProductUnitPrice") or 0) * l.get("Quantity", 0) * (1 - (l.get("Allowance") or 0) / 100)
+                          for l in payload["SalesOrderLines"])
             print(f"Ordre {oid}: {kunde_info} | {len(payload['SalesOrderLines'])} linjer | "
-                  f"ca. {sum_eks:,.2f} kr | merke: {payload.get(MERKING_FELT, '-')}")
+                  f"netto {sum_eks:,.2f} kr | bestillingsnr: {payload.get('PurchaseOrderReference', '-')}")
             for l in payload["SalesOrderLines"]:
+                if l.get("LineType") == "Text":
+                    print(f"    (tekst)          {l['Description']}")
+                    continue
                 print(f"    {l.get('ProductCode', '(fritekst)'):<16} {l['Quantity']:>6} x "
-                      f"{l.get('ProductUnitPrice', 0):>10,.2f}  {l['Description'][:50]}")
+                      f"{l.get('ProductUnitPrice', 0):>10,.2f} -{l.get('Allowance', 0):>5.1f} %  "
+                      f"kost {l.get('ProductUnitCost', 0):>9,.2f}  {l['Description'][:45]}")
             if not skriv:
                 continue
             r = requests.post(f"{PO_BASE_URL}/SalesOrders/Complete", headers=po_headers(),
