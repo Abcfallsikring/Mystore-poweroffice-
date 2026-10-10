@@ -72,8 +72,12 @@ def ms_sendte_ordre(antall_sider: int = 3) -> list[dict]:
 
 
 def ms_ordre_detalj(ordre_id) -> tuple[dict, list, list]:
+    # Proever aa ta med kommentarer; faller tilbake til bare produkter om Mystore ikke stoetter det
     r = requests.get(f"{MYSTORE_BASE}/orders/{ordre_id}", headers=mystore_headers(), timeout=30,
-                     params={"include": "order-products"})
+                     params={"include": "order-products,order-comments"})
+    if r.status_code != 200:
+        r = requests.get(f"{MYSTORE_BASE}/orders/{ordre_id}", headers=mystore_headers(), timeout=30,
+                         params={"include": "order-products"})
     r.raise_for_status()
     data = r.json()
     attrs = (data.get("data") or {}).get("attributes", {})
@@ -152,6 +156,33 @@ def po_finn_eller_lag_kunde(o: dict, skriv: bool) -> tuple[int | None, str]:
     return int(r.json()["Id"]), f"opprettet: {navn}"
 
 
+def po_finn_eller_lag_prosjekt(navn: str, kunde_id, skriv: bool) -> tuple[int | None, str]:
+    """Mystore-referansen blir prosjekt i PowerOffice (finnes det fra foer, gjenbrukes det)."""
+    navn = navn.strip()[:100]
+    for p in po_get_alle("/Projects", {"name": navn}):
+        if str(p.get("Name", "")).strip().lower() == navn.lower():
+            return int(p["Id"]), f"prosjekt finnes: {navn}"
+    if not skriv:
+        return None, f"NYTT prosjekt: {navn}"
+    payload = {"Name": navn}
+    if kunde_id:
+        payload["CustomerId"] = kunde_id
+    r = requests.post(f"{PO_BASE_URL}/Projects", headers=po_headers(), json=payload, timeout=30)
+    if r.status_code not in (200, 201):
+        raise RuntimeError(f"Kunne ikke opprette prosjekt {navn}: {r.status_code} {r.text[:300]}")
+    return int(r.json()["Id"]), f"prosjekt opprettet: {navn}"
+
+
+def kommentar(o: dict, inc: list) -> str:
+    """Kundens/butikkens kommentar paa ordren (feltet 'Kommentar' i Mystore)."""
+    tekst = _tekst(o, "comment", "comments", "customer_comment", "order_comment", "note", "notes", "message")
+    if not tekst:
+        deler = [_tekst(i.get("attributes", {}), "comment", "text", "message", "body", "content")
+                 for i in inc if "comment" in str(i.get("type", ""))]
+        tekst = "\n".join(d for d in deler if d)
+    return tekst.strip()
+
+
 def betalingsmerke(o: dict, inc: list) -> str:
     """Vipps/cash-merke. Feltnavn bekreftes med 'inspiser'."""
     # Mystore: payment_module = teknisk navn (invoice, vipps, klarna ...), payment_method = visningsnavn
@@ -167,9 +198,15 @@ def betalingsmerke(o: dict, inc: list) -> str:
     return ""
 
 
-def bygg_ordre(oid, o: dict, linjer: list, inc: list, kunde_id, varekoder: set) -> dict:
+def bygg_ordre(oid, o: dict, linjer: list, inc: list, kunde_id, varekoder: set, prosjekt_id=None) -> dict:
     # Som iizy: tekstlinje "Ordre <nr>" oeverst
     po_linjer = [{"LineType": "Text", "Description": f"Ordre {oid}"}]
+    # Kommentaren fra Mystore som tekstlinje(r) rett under (maks 400 tegn per linje)
+    for avsnitt in kommentar(o, inc).splitlines():
+        avsnitt = avsnitt.strip()
+        while avsnitt:
+            po_linjer.append({"LineType": "Text", "Description": avsnitt[:400]})
+            avsnitt = avsnitt[400:]
     for l in linjer:
         kode = _tekst(l, "sku", "product_sku")
         antall = _tall(l, "quantity", "qty") or 1
@@ -217,9 +254,12 @@ def bygg_ordre(oid, o: dict, linjer: list, inc: list, kunde_id, varekoder: set) 
         "CustomerReference": _tekst(o, "customer_address_name", "billing_address_name")[:100] or None,
         "SalesOrderLines": po_linjer,
     }
-    bestnr = ", ".join(filter(None, [_tekst(o, "reference"), betalingsmerke(o, inc)]))
-    if bestnr:
-        payload["PurchaseOrderReference"] = bestnr[:100]
+    # Referansen i Mystore gaar til Prosjekt; Bestillingsnr. faar Vipps/cash-merket
+    if prosjekt_id:
+        payload["ProjectId"] = prosjekt_id
+    merke = betalingsmerke(o, inc)
+    if merke:
+        payload["PurchaseOrderReference"] = merke
     return {k: v for k, v in payload.items() if v is not None}
 
 
@@ -236,6 +276,8 @@ def inspiser():
     print(json.dumps(attrs, indent=2, ensure_ascii=False)[:6000])
     print("\n=== Inkluderte objekter (typer) ===")
     print(sorted({i.get("type") for i in inc}))
+    print(f"\nReferanse (-> prosjekt): {_tekst(attrs, 'reference') or '-'}")
+    print(f"Kommentar (-> tekstlinje): {kommentar(attrs, inc) or '-'}")
     if linjer:
         print("\n=== Foerste ordrelinje ===")
         print(json.dumps(linjer[0], indent=2, ensure_ascii=False)[:3000])
@@ -262,11 +304,14 @@ def overfor(skriv: bool):
         try:
             attrs, linjer, inc = ms_ordre_detalj(oid)
             kunde_id, kunde_info = po_finn_eller_lag_kunde(attrs, skriv)
-            payload = bygg_ordre(oid, attrs, linjer, inc, kunde_id, varekoder)
+            prosjekt_id, prosjekt_info = None, "-"
+            if _tekst(attrs, "reference"):
+                prosjekt_id, prosjekt_info = po_finn_eller_lag_prosjekt(_tekst(attrs, "reference"), kunde_id, skriv)
+            payload = bygg_ordre(oid, attrs, linjer, inc, kunde_id, varekoder, prosjekt_id)
             sum_eks = sum((l.get("ProductUnitPrice") or 0) * l.get("Quantity", 0) * (1 - (l.get("Allowance") or 0) / 100)
                           for l in payload["SalesOrderLines"])
             print(f"Ordre {oid}: {kunde_info} | {len(payload['SalesOrderLines'])} linjer | "
-                  f"netto {sum_eks:,.2f} kr | bestillingsnr: {payload.get('PurchaseOrderReference', '-')}")
+                  f"netto {sum_eks:,.2f} kr | {prosjekt_info} | bestillingsnr: {payload.get('PurchaseOrderReference', '-')}")
             for l in payload["SalesOrderLines"]:
                 if l.get("LineType") == "Text":
                     print(f"    (tekst)          {l['Description']}")
