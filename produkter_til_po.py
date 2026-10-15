@@ -32,7 +32,10 @@ def main(skriv: bool):
     ms = mystore_get_all_products()
     po = po_get_all_products()
     mangler = [p for p in ms if p["articleNumber"] and p["articleNumber"] not in po]
-    print(f"Mystore: {len(ms)} varer | PowerOffice: {len(po)} varer | mangler i PO: {len(mangler)}\n")
+    oppsummering = f"Mystore: {len(ms)} varer | PowerOffice: {len(po)} varer | mangler i PO: {len(mangler)}"
+    print(oppsummering + "\n")
+    if os.environ.get("GITHUB_ACTIONS"):
+        print(f"::notice::{oppsummering}")
 
     ok = feil = 0
     for p in mangler:

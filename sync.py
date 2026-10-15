@@ -186,15 +186,18 @@ def po_headers() -> dict:
 
 def po_get_all_products() -> dict:
     """Returnerer dict: { articleNumber -> produkt fra PowerOffice }.
-    Standard sidestørrelse er 5000; paginering via x-pagination-header."""
+    Henter side for side (PageNumber/PageSize) til alt er hentet, slik at vi
+    ikke stopper ved 1000 varer. Stopper hvis en side ikke gir nye varer
+    (vern mot evig loekke om PowerOffice skulle ignorere PageNumber)."""
     products = {}
-    url = f"{PO_BASE_URL}/products"
+    sett_id = set()
+    side_str = 1000
 
-    while url:
-        resp = requests.get(url, headers=po_headers(), timeout=60)
+    for side in range(1, 101):
+        resp = requests.get(f"{PO_BASE_URL}/products", headers=po_headers(), timeout=60,
+                            params={"PageNumber": side, "PageSize": side_str})
 
         if resp.status_code == 204 or not resp.text.strip():
-            # Ingen produkter (tomt miljø)
             break
 
         if resp.status_code != 200:
@@ -207,19 +210,19 @@ def po_get_all_products() -> dict:
         else:
             batch = data.get("data") or data.get("value") or []
 
+        nye = 0
         for p in batch:
+            pid = p.get("Id") or p.get("id")
+            if pid in sett_id:
+                continue
+            sett_id.add(pid)
+            nye += 1
             code = p.get("Code") or p.get("code") or p.get("articleNumber")
             if code:
                 products[str(code).strip()] = p
 
-        # Neste side fra x-pagination-header (om datasettet er større enn sidestørrelsen)
-        url = None
-        pag = resp.headers.get("x-pagination")
-        if pag:
-            try:
-                url = json.loads(pag).get("nextPageLink") or json.loads(pag).get("NextPageLink")
-            except (ValueError, AttributeError):
-                pass
+        if len(batch) < side_str or nye == 0:
+            break
 
     log.info("PowerOffice: hentet %d produkter", len(products))
     return products
