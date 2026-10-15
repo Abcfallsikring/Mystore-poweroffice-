@@ -15,6 +15,7 @@ on:
           - alt-kjor           # hele runden i DEMO: nye varer -> produktsynk -> ordre -> lagerregulering
           - produkter-torr     # vis hvilke Mystore-varer som mangler i PO (kun lesing)
           - ordre-inspiser     # vis raadata fra en Mystore-ordre
+          - ordre-statuser     # vis ordrestatusene i Mystore med id (kun lesing)
           - ordre-torr         # vis hvilke ordre som ville blitt fakturautkast
           - ordre-kjor         # lag fakturautkast i DEMO
           - lager-torr         # vis lagerregulering
@@ -23,6 +24,10 @@ on:
         description: "Maks antall ordre (ordre-jobber)"
         required: false
         default: "5"
+      kredit_status:
+        description: "Mystore-status-id(er) for kreditert/returnert, f.eks. 7 eller 7,8 (tom = kreditnota av)"
+        required: false
+        default: ""
 
 jobs:
   demo:
@@ -41,6 +46,7 @@ jobs:
       ORDRE_ENABLED:         "true"
       LAGERBILAG_ENABLED:    "true"
       ANTALL:                ${{ github.event.inputs.antall }}
+      KREDIT_STATUS_IDS:     ${{ github.event.inputs.kredit_status }}
     steps:
       - name: Stopp hvis demo-noekler mangler
         run: |
@@ -66,6 +72,7 @@ jobs:
               [ $s0 -eq 0 ] && [ $s1 -eq 0 ] && [ $s2 -eq 0 ] && [ $s3 -eq 0 ] ;;
             produkter-torr) python produkter_til_po.py torr ;;
             ordre-inspiser) python mystore_til_po.py inspiser ;;
+            ordre-statuser) python mystore_til_po.py statuser ;;
             ordre-torr)     python mystore_til_po.py torr ;;
             ordre-kjor)     python mystore_til_po.py kjor ;;
             lager-torr)     python lagerbilag.py lagerverdi ;;

@@ -5,6 +5,14 @@ Erstatning for iizy-integrasjonen. Egen fil - endrer IKKE sync.py.
   python mystore_til_po.py inspiser        -> viser raadata for nyeste sendte ordre (kun lesing)
   python mystore_til_po.py torr            -> viser hvilke ordre som VILLE blitt overfoert (kun lesing)
   python mystore_til_po.py kjor            -> oppretter fakturautkast (krever ORDRE_ENABLED=true)
+  python mystore_til_po.py statuser        -> viser ordrestatusene i Mystore med id (kun lesing)
+
+Kreditnotaer:
+  Ordre som faar en av statusene i KREDIT_STATUS_IDS (f.eks. "Kreditert"/"Returnert")
+  blir kreditnota-utkast i PowerOffice: samme linjer med negativt antall, merket
+  "Kreditnota for ordre <nr>", referanse MYSTORE-KREDIT-<ordre-id>.
+  Krediteres bare ordre som faktisk er overfoert (MYSTORE-<id> finnes i PowerOffice),
+  slik at ordre fra iizy-tiden eller ordre som aldri ble sendt ikke krediteres.
 
 Sikringer:
   - Skriver kun naar ORDRE_ENABLED=true.
@@ -35,6 +43,8 @@ OPPRETT_VARER   = os.environ.get("OPPRETT_VARER", "true").lower() == "true"  # l
 PRODUKT_SALGSKONTO = int(os.environ.get("PRODUKT_SALGSKONTO", "3000"))    # paakrevd ved ny vare i PO
 ORDRE_ENABLED   = os.environ.get("ORDRE_ENABLED", "false").lower() == "true"
 KUN_DEMO        = os.environ.get("KUN_DEMO", "true").lower() == "true"
+# Mystore-status(er) som betyr kreditert/returnert. Tom = kreditnotaer er av. Finn id med 'statuser'.
+KREDIT_STATUS_IDS = {x.strip() for x in os.environ.get("KREDIT_STATUS_IDS", "").split(",") if x.strip()}
 
 
 def _tall(d: dict, *keys) -> float | None:
@@ -59,7 +69,8 @@ def _tekst(d: dict, *keys) -> str:
 
 # ─── Mystore (kun lesing) ───────────────────────────────────────────────────
 
-def ms_sendte_ordre(antall_sider: int = 3) -> list[dict]:
+def ms_sendte_ordre(antall_sider: int = 3, status_ids: set | None = None) -> list[dict]:
+    status_ids = status_ids or {SENDT_STATUS_ID}
     ordre = []
     for side in range(1, antall_sider + 1):
         r = requests.get(f"{MYSTORE_BASE}/orders", headers=mystore_headers(), timeout=30,
@@ -70,9 +81,17 @@ def ms_sendte_ordre(antall_sider: int = 3) -> list[dict]:
             break
         for o in data:
             sid = (((o.get("relationships") or {}).get("order-status") or {}).get("data") or {}).get("id")
-            if str(sid) == SENDT_STATUS_ID and int(o["id"]) >= FRA_ORDRE_ID:
+            if str(sid) in status_ids and int(o["id"]) >= FRA_ORDRE_ID:
                 ordre.append(o)
     return ordre
+
+
+def ms_ordrestatuser() -> list[tuple[str, str]]:
+    r = requests.get(f"{MYSTORE_BASE}/order-statuses", headers=mystore_headers(), timeout=30,
+                     params={"page[size]": 100})
+    r.raise_for_status()
+    return [(str(s.get("id")), _tekst(s.get("attributes", {}), "name", "title", "label") or "-")
+            for s in r.json().get("data", [])]
 
 
 def ms_ordre_detalj(ordre_id) -> tuple[dict, list, list]:
@@ -302,7 +321,40 @@ def bygg_ordre(oid, o: dict, linjer: list, inc: list, kunde_id, varekoder: set, 
     return {k: v for k, v in payload.items() if v is not None}
 
 
+def bygg_kreditnota(oid, o: dict, linjer: list, inc: list, kunde_id, varekoder: set, prosjekt_id=None) -> dict:
+    """Kreditnota-utkast: samme linjer som ordren, men negativt antall."""
+    payload = bygg_ordre(oid, o, linjer, inc, kunde_id, varekoder, prosjekt_id)
+    nye = []
+    for l in payload["SalesOrderLines"]:
+        l = dict(l)
+        if l.get("LineType") == "Text":
+            if l["Description"] == f"Ordre {oid}":
+                l["Description"] = f"Kreditnota for ordre {oid}"
+            elif l["Description"].startswith("BETALT MED VIPPS"):
+                l["Description"] = "BETALT MED VIPPS - tilbakebetales i Vipps"
+        else:
+            l["Quantity"] = -abs(l.get("Quantity") or 1)
+        nye.append(l)
+    payload["SalesOrderLines"] = nye
+    payload["ExternalImportReference"] = f"MYSTORE-KREDIT-{oid}"
+    payload.pop("ImportedOrderNo", None)
+    payload["SalesOrderDate"] = __import__("datetime").date.today().isoformat()
+    return payload
+
+
 # ─── Moduser ───────────────────────────────────────────────────────────────
+
+def statuser():
+    print("Ordrestatuser i Mystore (id  navn):")
+    for sid, navn in ms_ordrestatuser():
+        merke = []
+        if sid == SENDT_STATUS_ID:
+            merke.append("<- overfoeres som faktura")
+        if sid in KREDIT_STATUS_IDS:
+            merke.append("<- krediteres")
+        print(f"  {sid:>4}  {navn}  {' '.join(merke)}")
+    if not KREDIT_STATUS_IDS:
+        print("\nKREDIT_STATUS_IDS er ikke satt - kreditnotaer er av.")
 
 def inspiser():
     ordre = ms_sendte_ordre(1)
@@ -384,14 +436,66 @@ def overfor(skriv: bool):
             print(f"Ordre {oid}: FEIL {e}")
             feil += 1
 
+    k_ok, k_feil = kreditnotaer(skriv, refs, varekoder)
+    ok, feil = ok + k_ok, feil + k_feil
+
     print(f"\nFerdig: {ok} opprettet, {feil} feil." if skriv else "\nTORRKJORING - ingenting er sendt.")
     if feil:
         sys.exit(1)
+
+
+def kreditnotaer(skriv: bool, refs: set, varekoder: set) -> tuple[int, int]:
+    if not KREDIT_STATUS_IDS:
+        print("\nKreditnotaer: av (KREDIT_STATUS_IDS er ikke satt).")
+        return 0, 0
+    kandidater = ms_sendte_ordre(status_ids=KREDIT_STATUS_IDS)
+    aktuelle = [o for o in kandidater
+                if f"MYSTORE-{o['id']}" in refs and f"MYSTORE-KREDIT-{o['id']}" not in refs][:ANTALL]
+    hoppet = [o["id"] for o in kandidater if f"MYSTORE-{o['id']}" not in refs]
+    print(f"\n{len(aktuelle)} krediterte ordre som skal ha kreditnota (maks {ANTALL}).")
+    if hoppet:
+        print(f"  Hoppes over (aldri overfoert av denne integrasjonen): {', '.join(map(str, hoppet[:20]))}")
+
+    ok = feil = 0
+    for o in aktuelle:
+        oid = o["id"]
+        try:
+            attrs, linjer, inc = ms_ordre_detalj(oid)
+            kunde_id, kunde_info = po_finn_eller_lag_kunde(attrs, skriv)
+            prosjekt_id = None
+            if _tekst(attrs, "reference"):
+                prosjekt_id, _ = po_finn_eller_lag_prosjekt(_tekst(attrs, "reference"), kunde_id, skriv)
+            payload = bygg_kreditnota(oid, attrs, linjer, inc, kunde_id, varekoder, prosjekt_id)
+            sum_eks = sum((l.get("ProductUnitPrice") or 0) * l.get("Quantity", 0) * (1 - (l.get("Allowance") or 0) / 100)
+                          for l in payload["SalesOrderLines"])
+            print(f"Kreditnota ordre {oid}: {kunde_info} | netto {sum_eks:,.2f} kr")
+            for l in payload["SalesOrderLines"]:
+                if l.get("LineType") == "Text":
+                    print(f"    (tekst)          {l['Description']}")
+                else:
+                    print(f"    {l.get('ProductCode', '(fritekst)'):<16} {l['Quantity']:>6} x "
+                          f"{l.get('ProductUnitPrice', 0):>10,.2f}  {l['Description'][:45]}")
+            if not skriv:
+                continue
+            r = requests.post(f"{PO_BASE_URL}/SalesOrders/Complete", headers=po_headers(),
+                              json=payload, timeout=60)
+            if r.status_code in (200, 201):
+                print(f"    -> kreditnota-utkast opprettet: {r.text[:120]}")
+                ok += 1
+            else:
+                print(f"    -> FEIL {r.status_code}: {r.text[:400]}")
+                feil += 1
+        except Exception as e:
+            print(f"Kreditnota ordre {oid}: FEIL {e}")
+            feil += 1
+    return ok, feil
 
 
 if __name__ == "__main__":
     modus = sys.argv[1] if len(sys.argv) > 1 else "torr"
     if modus == "inspiser":
         inspiser()
+    elif modus == "statuser":
+        statuser()
     else:
         overfor(skriv=(modus == "kjor"))

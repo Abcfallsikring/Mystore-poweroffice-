@@ -24,6 +24,12 @@ Sikringer:
   - Én referanse per dag (ABC-LAGER-AAAA-MM-DD) hindrer dobbeltbilag.
   - Er perioden sperret i PowerOffice (sperredato), posteres ingenting.
   - Endringer under LAGER_MIN_DIFF kroner posteres ikke.
+  - Stopper (ingen bilag) hvis saldoen paa 1460 ikke kan stoles paa:
+      * integrasjonen mangler tilgang til kontotransaksjoner, eller
+      * konto 1460 har ingen transaksjoner i det hele tatt (saldo leses som 0)
+        - unntak: LAGER_FORSTE_BILAG=true for aller foerste inngaaende bilag, eller
+      * differansen er stoerre enn LAGER_MAKS_DIFF kroner
+        - unntak: LAGER_TILLAT_STOR_DIFF=true for en enkelt, kontrollert kjoering.
 """
 
 import os
@@ -43,6 +49,9 @@ LAGER_KONTO    = int(os.environ.get("LAGER_KONTO", "1460"))
 LAGER_MOTKONTO = int(os.environ.get("LAGER_MOTKONTO", "4390"))  # Beholdningsendring varer for videresalg
 LAGER_MIN_DIFF = float(os.environ.get("LAGER_MIN_DIFF", "1"))
 LAGERBILAG_ENABLED = os.environ.get("LAGERBILAG_ENABLED", "false").lower() == "true"
+LAGER_MAKS_DIFF = float(os.environ.get("LAGER_MAKS_DIFF", "100000"))
+LAGER_FORSTE_BILAG = os.environ.get("LAGER_FORSTE_BILAG", "false").lower() == "true"
+LAGER_TILLAT_STOR_DIFF = os.environ.get("LAGER_TILLAT_STOR_DIFF", "false").lower() == "true"
 
 
 def _po_get(url: str, params: dict | None = None):
@@ -90,11 +99,12 @@ def beregn_lagerverdi() -> tuple[float, list, list]:
     return total, uten_innpris, topp
 
 
-def po_kontosaldo(kontonr: int, til_dato: str) -> float:
+def po_kontosaldo(kontonr: int, til_dato: str) -> tuple[float, int]:
+    """Saldo og antall transaksjoner paa kontoen til og med datoen."""
     trans = _po_get_paged(f"{PO_BASE_URL}/AccountTransactions", {
         "fromDate": "2000-01-01", "toDate": til_dato, "accountNos": str(kontonr),
     })
-    return round(sum(float(t.get("Amount") or 0) for t in trans), 2)
+    return round(sum(float(t.get("Amount") or 0) for t in trans), 2), len(trans)
 
 
 def po_konto_id(kontonr: int) -> int:
@@ -151,12 +161,17 @@ def lagerbilag(dato_arg: str | None, send: bool):
     dato = bilagsdato(dato_arg)
     log.info("=== Lagerregulering per %s ===", dato)
     try:
-        tilgangssjekk()
+        tilganger_ok = tilgangssjekk()
     except Exception as e:  # sjekken skal aldri stoppe selve tallene
         log.warning("Kunne ikke lese tilganger: %s", e)
+        tilganger_ok = False
 
     fasit, uten_innpris, topp = beregn_lagerverdi()
-    bokfort = po_kontosaldo(LAGER_KONTO, dato)
+    try:
+        bokfort, antall_trans = po_kontosaldo(LAGER_KONTO, dato)
+    except Exception as e:
+        log.error("Kunne ikke lese saldo paa %s: %s - ingen bilag.", LAGER_KONTO, e)
+        sys.exit(1)
     diff = round(fasit - bokfort, 2)
 
     print(f"\nLagerverdi MyStore (antall x innpris): {fasit:>14,.2f} kr")
@@ -174,6 +189,24 @@ def lagerbilag(dato_arg: str | None, send: bool):
 
     if abs(diff) < LAGER_MIN_DIFF:
         log.info("Differanse under %.0f kr - ingen bilag.", LAGER_MIN_DIFF)
+        return
+
+    # Sikring: aldri postere et stort bilag paa en saldo vi ikke kan stole paa
+    stopp = []
+    if not tilganger_ok:
+        stopp.append("integrasjonen mangler tilganger (se tilgangssjekken over)")
+    if antall_trans == 0 and not LAGER_FORSTE_BILAG:
+        stopp.append(f"konto {LAGER_KONTO} har ingen transaksjoner - saldoen 0 kan skyldes manglende "
+                     f"tilgang. Gjelder det aller foerste bilaget: kjoer med LAGER_FORSTE_BILAG=true")
+    if abs(diff) > LAGER_MAKS_DIFF and not LAGER_TILLAT_STOR_DIFF:
+        stopp.append(f"differansen {abs(diff):,.2f} kr er over grensen {LAGER_MAKS_DIFF:,.0f} kr. "
+                     f"Er den riktig: kjoer én gang med LAGER_TILLAT_STOR_DIFF=true")
+    if stopp:
+        print("\nSTOPP - bilaget blir IKKE postert:")
+        for grunn in stopp:
+            print(f"  - {grunn}")
+        if send:
+            sys.exit(1)
         return
 
     tekst = f"Lagerregulering {dato} (MyStore-lagerverdi {fasit:,.2f})"
