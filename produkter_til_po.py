@@ -36,6 +36,16 @@ def main(skriv: bool):
     print(oppsummering + "\n")
     if os.environ.get("GITHUB_ACTIONS"):
         print(f"::notice::{oppsummering}")
+    # Varer som er arkivert (inaktive) i PO kommer ikke med i listen over, men koden er i bruk
+    r = requests.get(f"{PO_BASE_URL}/Products", headers=po_headers(), timeout=60,
+                     params={"isArchived": "true", "PageSize": 1000})
+    arkiv = {str(a.get("Code")).strip(): a for a in (r.json() if r.status_code == 200 and r.text.strip() else [])}
+    arkiverte = [p["articleNumber"] for p in mangler if p["articleNumber"] in arkiv]
+    if arkiverte:
+        melding = f"{len(arkiverte)} av varene som mangler er ARKIVERT i PowerOffice: {', '.join(arkiverte[:30])}"
+        print(melding)
+        if os.environ.get("GITHUB_ACTIONS"):
+            print(f"::notice::{melding}")
 
     ok = feil = 0
     for p in mangler:
