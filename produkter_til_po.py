@@ -68,4 +68,11 @@ def main(skriv: bool):
 
 
 if __name__ == "__main__":
-    main(skriv=(len(sys.argv) > 1 and sys.argv[1] == "kjor"))
+    try:
+        main(skriv=(len(sys.argv) > 1 and sys.argv[1] == "kjor"))
+    except Exception as e:
+        resp = getattr(e, "response", None)
+        detalj = f" | {resp.status_code} {resp.text[:300]}" if resp is not None else ""
+        if os.environ.get("GITHUB_ACTIONS"):
+            print(f"::error::{type(e).__name__}: {str(e)[:300]}{detalj}".replace("\n", " "))
+        raise
