@@ -200,6 +200,10 @@ def po_get_all_products() -> dict:
         if resp.status_code == 204 or not resp.text.strip():
             break
 
+        # Forbi siste side: PowerOffice svarer 400 "Paging error" - da er alt hentet
+        if resp.status_code == 400 and "Paging error" in resp.text:
+            break
+
         if resp.status_code != 200:
             log.error("PowerOffice GET products feil %s: %s", resp.status_code, resp.text[:300])
             resp.raise_for_status()
