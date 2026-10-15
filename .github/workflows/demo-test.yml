@@ -25,9 +25,9 @@ on:
         required: false
         default: "5"
       kredit_status:
-        description: "Mystore-status-id(er) for kreditert/returnert, f.eks. 7 eller 7,8 (tom = kreditnota av)"
+        description: "Mystore-status-id(er) for kreditert/returnert, 5 = Returnert (tom = kreditnota av)"
         required: false
-        default: ""
+        default: "5"
 
 jobs:
   demo:
