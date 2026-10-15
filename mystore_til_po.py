@@ -86,12 +86,38 @@ def ms_sendte_ordre(antall_sider: int = 3, status_ids: set | None = None) -> lis
     return ordre
 
 
-def ms_ordrestatuser() -> list[tuple[str, str]]:
-    r = requests.get(f"{MYSTORE_BASE}/order-statuses", headers=mystore_headers(), timeout=30,
-                     params={"page[size]": 100})
-    r.raise_for_status()
-    return [(str(s.get("id")), _tekst(s.get("attributes", {}), "name", "title", "label") or "-")
-            for s in r.json().get("data", [])]
+def ms_ordrestatuser() -> list[tuple[str, str, int]]:
+    """(id, navn, antall blant de siste ordrene). Leser statuslisten om Mystore har den,
+    ellers telles statusene paa de siste ordrene (navn hentes via include om mulig)."""
+    navn = {}
+    for sti in ("order-statuses", "order-status", "orderstatuses"):
+        r = requests.get(f"{MYSTORE_BASE}/{sti}", headers=mystore_headers(), timeout=30,
+                         params={"page[size]": 100})
+        print(f"GET /{sti} -> {r.status_code}")
+        if r.status_code == 200:
+            for st in r.json().get("data", []):
+                navn[str(st.get("id"))] = _tekst(st.get("attributes", {}), "name", "title", "label") or "-"
+            break
+    antall: dict[str, int] = {}
+    for side in range(1, 5):
+        r = requests.get(f"{MYSTORE_BASE}/orders", headers=mystore_headers(), timeout=30,
+                         params={"page[size]": 50, "page[number]": side, "sort": "-created_at",
+                                 "include": "order-status"})
+        if r.status_code != 200:
+            r = requests.get(f"{MYSTORE_BASE}/orders", headers=mystore_headers(), timeout=30,
+                             params={"page[size]": 50, "page[number]": side, "sort": "-created_at"})
+        r.raise_for_status()
+        d = r.json()
+        if not d.get("data"):
+            break
+        for i in d.get("included", []):
+            if "status" in str(i.get("type", "")):
+                navn.setdefault(str(i.get("id")), _tekst(i.get("attributes", {}), "name", "title", "label") or "-")
+        for o in d["data"]:
+            sid = str((((o.get("relationships") or {}).get("order-status") or {}).get("data") or {}).get("id"))
+            antall[sid] = antall.get(sid, 0) + 1
+    ider = sorted(set(navn) | set(antall), key=lambda x: (len(x), x))
+    return [(sid, navn.get(sid, "?"), antall.get(sid, 0)) for sid in ider]
 
 
 def ms_ordre_detalj(ordre_id) -> tuple[dict, list, list]:
@@ -345,14 +371,17 @@ def bygg_kreditnota(oid, o: dict, linjer: list, inc: list, kunde_id, varekoder: 
 # ─── Moduser ───────────────────────────────────────────────────────────────
 
 def statuser():
-    print("Ordrestatuser i Mystore (id  navn):")
-    for sid, navn in ms_ordrestatuser():
+    print("Ordrestatuser i Mystore (id  navn  antall blant siste 200 ordre):")
+    for sid, navn, antall in ms_ordrestatuser():
         merke = []
         if sid == SENDT_STATUS_ID:
             merke.append("<- overfoeres som faktura")
         if sid in KREDIT_STATUS_IDS:
             merke.append("<- krediteres")
-        print(f"  {sid:>4}  {navn}  {' '.join(merke)}")
+        linje = f"status {sid}: {navn} ({antall} ordre) {' '.join(merke)}"
+        print(f"  {linje}")
+        if os.environ.get("GITHUB_ACTIONS"):
+            print(f"::notice::{linje}")
     if not KREDIT_STATUS_IDS:
         print("\nKREDIT_STATUS_IDS er ikke satt - kreditnotaer er av.")
 
