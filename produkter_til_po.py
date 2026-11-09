@@ -32,7 +32,20 @@ def main(skriv: bool):
     ms = mystore_get_all_products()
     po = po_get_all_products()
     mangler = [p for p in ms if p["articleNumber"] and p["articleNumber"] not in po]
-    print(f"Mystore: {len(ms)} varer | PowerOffice: {len(po)} varer | mangler i PO: {len(mangler)}\n")
+    oppsummering = f"Mystore: {len(ms)} varer | PowerOffice: {len(po)} varer | mangler i PO: {len(mangler)}"
+    print(oppsummering + "\n")
+    if os.environ.get("GITHUB_ACTIONS"):
+        print(f"::notice::{oppsummering}")
+    # Varer som er arkivert (inaktive) i PO kommer ikke med i listen over, men koden er i bruk
+    r = requests.get(f"{PO_BASE_URL}/Products", headers=po_headers(), timeout=60,
+                     params={"isArchived": "true", "PageSize": 1000})
+    arkiv = {str(a.get("Code")).strip(): a for a in (r.json() if r.status_code == 200 and r.text.strip() else [])}
+    arkiverte = [p["articleNumber"] for p in mangler if p["articleNumber"] in arkiv]
+    if arkiverte:
+        melding = f"{len(arkiverte)} av varene som mangler er ARKIVERT i PowerOffice: {', '.join(arkiverte[:30])}"
+        print(melding)
+        if os.environ.get("GITHUB_ACTIONS"):
+            print(f"::notice::{melding}")
 
     ok = feil = 0
     for p in mangler:
@@ -65,4 +78,11 @@ def main(skriv: bool):
 
 
 if __name__ == "__main__":
-    main(skriv=(len(sys.argv) > 1 and sys.argv[1] == "kjor"))
+    try:
+        main(skriv=(len(sys.argv) > 1 and sys.argv[1] == "kjor"))
+    except Exception as e:
+        resp = getattr(e, "response", None)
+        detalj = f" | {resp.status_code} {resp.text[:300]}" if resp is not None else ""
+        if os.environ.get("GITHUB_ACTIONS"):
+            print(f"::error::{type(e).__name__}: {str(e)[:300]}{detalj}".replace("\n", " "))
+        raise
